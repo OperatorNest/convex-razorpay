@@ -1,6 +1,6 @@
 {
   "name": "@operatornest/convex-razorpay",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Razorpay payments for Convex: orders, subscriptions, refunds and verified webhooks.",
   "keywords": [
     "component",
