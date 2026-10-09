@@ -1,0 +1,71 @@
+name: Bug report
+description: Report a reproducible component or client failure.
+labels: ["type:bug", "status:needs-triage"]
+body:
+  - type: input
+    id: package_version
+    attributes:
+      label: Package version
+      placeholder: e.g. 0.2.1, or commit SHA for an unreleased checkout
+    validations:
+      required: true
+  - type: input
+    id: convex_version
+    attributes:
+      label: Convex version
+    validations:
+      required: true
+  - type: input
+    id: node_version
+    attributes:
+      label: Node.js version
+    validations:
+      required: true
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Convex runtime
+      options: [Convex cloud, Self-hosted, Local backend]
+    validations:
+      required: true
+  - type: dropdown
+    id: razorpay_mode
+    attributes:
+      label: Razorpay mode
+      description: Provide when relevant; leave blank if not applicable or unavailable.
+      options: [Test, Live, Not applicable]
+    validations:
+      required: false
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include the smallest code or steps that reproduce the issue. Redact sensitive data.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Optional logs
+      description: Do not include API keys, webhook secrets, access tokens, payment card or bank data, customer or recipient personal data, or unredacted webhook payloads.
+    validations:
+      required: false
+  - type: checkboxes
+    id: issue_search
+    attributes:
+      label: Existing reports
+      options:
+        - label: I searched existing issues and discussions.
+          required: true

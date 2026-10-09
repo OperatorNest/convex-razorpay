@@ -1,0 +1,108 @@
+{
+  "name": "@operatornest/convex-razorpay",
+  "version": "0.1.1",
+  "description": "Razorpay payments for Convex: orders, subscriptions, refunds and verified webhooks.",
+  "keywords": [
+    "component",
+    "convex",
+    "india",
+    "payments",
+    "razorpay",
+    "upi"
+  ],
+  "homepage": "https://github.com/OperatorNest/convex-razorpay#readme",
+  "bugs": {
+    "url": "https://github.com/OperatorNest/convex-razorpay/issues"
+  },
+  "license": "MIT",
+  "author": "OperatorNest",
+  "contributors": [
+    {
+      "name": "Ravalika Korthiwada",
+      "url": "https://github.com/ravalikamaker"
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OperatorNest/convex-razorpay.git"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/fixtures/**",
+    "!src/test-helpers.ts",
+    "!src/**/test-helpers.ts"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "module": "./dist/client/index.js",
+  "types": "./dist/client/index.d.ts",
+  "exports": {
+    "./package.json": "./package.json",
+    ".": {
+      "types": "./dist/client/index.d.ts",
+      "default": "./dist/client/index.js"
+    },
+    "./test": "./src/test.ts",
+    "./_generated/component.js": {
+      "types": "./dist/component/_generated/component.d.ts"
+    },
+    "./_generated/component": {
+      "types": "./dist/component/_generated/component.d.ts"
+    },
+    "./convex.config.js": {
+      "types": "./dist/component/convex.config.d.ts",
+      "default": "./dist/component/convex.config.js"
+    },
+    "./convex.config": {
+      "types": "./dist/component/convex.config.d.ts",
+      "default": "./dist/component/convex.config.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build:codegen": "node scripts/with-local-lock.mjs pnpm run build:codegen:locked",
+    "build:codegen:locked": "convex codegen --component-dir ./src/component && pnpm build && convex codegen",
+    "build": "node node_modules/@typescript/native/bin/tsc -p tsconfig.build.json",
+    "build:clean": "rm -rf dist *.tsbuildinfo && pnpm build:codegen",
+    "typecheck": "node node_modules/@typescript/native/bin/tsc --noEmit && node node_modules/@typescript/native/bin/tsc -p tsconfig.test.json && node node_modules/@typescript/native/bin/tsc -p example/convex/tsconfig.json",
+    "lint": "oxlint --type-aware --deny-warnings --report-unused-disable-directives .",
+    "fmt": "oxfmt .",
+    "fmt:check": "oxfmt --check .",
+    "test": "vitest run --coverage",
+    "test:watch": "vitest",
+    "smoke": "node scripts/smoke.mjs",
+    "test:coverage": "vitest run --coverage --coverage.reporter=text",
+    "check": "pnpm fmt:check && pnpm build && pnpm lint && pnpm typecheck && pnpm knip && pnpm test",
+    "changeset": "changeset",
+    "e2e:env": "node scripts/with-local-lock.mjs node scripts/e2e-env.mjs",
+    "e2e": "node scripts/e2e.mjs",
+    "knip": "knip --no-progress"
+  },
+  "devDependencies": {
+    "@changesets/cli": "3.0.3",
+    "@convex-dev/eslint-plugin": "5.0.0",
+    "@edge-runtime/vm": "5.0.0",
+    "@typescript/native": "npm:typescript@7.0.2",
+    "@vitest/coverage-v8": "5.0.3",
+    "convex": "1.46.0",
+    "convex-test": "0.0.60",
+    "knip": "6.39.0",
+    "oxfmt": "0.71.0",
+    "oxlint": "1.86.0",
+    "oxlint-tsgolint": "7.0.2003",
+    "pkg-pr-new": "0.0.88",
+    "typescript": "npm:@typescript/typescript6@6.0.2",
+    "vitest": "5.0.3"
+  },
+  "peerDependencies": {
+    "convex": "^1.46.0"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "packageManager": "pnpm@12.9.1"
+}
