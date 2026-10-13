@@ -1,4 +1,7 @@
+import { parseProviderResponse } from "../shared/providerErrors.js";
+import { customerFields } from "./mapping.js";
 import { razorpayError } from "../shared/errors.js";
+
 import { v } from "convex/values";
 import { action, query } from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
@@ -66,7 +69,7 @@ async function refreshCustomerProfile(
   if (!changes.name && !changes.email && !changes.contact)
     return ctx.runMutation(internal.mutations.putCustomer, {
       raw: linked.raw,
-      observedAt: linked.updatedAtProvider,
+      observedAt: linked.providerUpdatedAt,
       ...optionalLinkage({
         userId: args.userId,
         externalId: args.externalId,
@@ -78,17 +81,22 @@ async function refreshCustomerProfile(
   if (testMode) {
     updated = omitUndefined({
       ...linked.raw,
-      id: linked.razorpayId,
+      id: linked.razorpayCustomerId,
       name: args.name,
       email: args.email,
       contact: args.contact ?? linked.contact,
       created_at: Math.floor(linked.createdAt / 1000),
     });
   } else {
-    updated = await requestProvider("PUT", `/customers/${encodeURIComponent(linked.razorpayId)}`, {
-      body: { ...changes, contact: args.contact ?? linked.contact },
-    });
-    if (record(updated).id !== linked.razorpayId) throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
+    updated = await requestProvider(
+      "PUT",
+      `/customers/${encodeURIComponent(linked.razorpayCustomerId)}`,
+      {
+        body: { ...changes, contact: args.contact ?? linked.contact },
+      },
+    );
+    if (record(updated).id !== linked.razorpayCustomerId)
+      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     const provider = record(updated);
     if (provider.contact === undefined && linked.contact !== undefined) {
       updated = { ...provider, contact: linked.contact };
@@ -128,7 +136,7 @@ async function createCustomer(
   if (args.gstin && !/^[0-9A-Z]{15}$/.test(args.gstin))
     throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
   const notes = linkedNotes(args.notes, args.userId, args.externalId, args.metadata);
-  const fingerprint = stableStringify({
+  const requestFingerprint = stableStringify({
     name: args.name,
     email: args.email,
     contact: args.contact,
@@ -139,7 +147,7 @@ async function createCustomer(
     metadata: args.metadata,
   });
   const existing = args.idempotencyKey
-    ? await ctx.runQuery(internal.mutations.customerByKey, { key: args.idempotencyKey })
+    ? await ctx.runQuery(internal.mutations.customerByKey, { idempotencyKey: args.idempotencyKey })
     : null;
   if (existing) {
     assertModeMatches(existing, testMode);
@@ -149,7 +157,7 @@ async function createCustomer(
     if (getOrCreate && args.userId) {
       return refreshCustomerProfile(ctx, existing, args, testMode);
     }
-    if (existing.requestFingerprint !== fingerprint)
+    if (existing.requestFingerprint !== requestFingerprint)
       throw razorpayError("RAZORPAY_IDEMPOTENCY_CONFLICT");
     return existing;
   }
@@ -197,7 +205,7 @@ async function createCustomer(
       userId: args.userId,
       externalId: args.externalId,
       metadata: args.metadata,
-      requestFingerprint: fingerprint,
+      requestFingerprint,
       idempotencyKey: args.idempotencyKey,
       testMode,
     }),
@@ -216,29 +224,35 @@ export const getOrCreate = action({
 });
 
 export const fetch = action({
-  args: { customerId: v.string(), testMode: v.optional(v.boolean()) },
-  returns: schema.doc("customers"),
-  handler: async (ctx, { customerId, testMode }): Promise<Doc<"customers">> => {
+  args: { razorpayCustomerId: v.string(), testMode: v.optional(v.boolean()) },
+  returns: v.object(schema.tables.customers.validator.fields),
+  handler: async (
+    ctx,
+    { razorpayCustomerId, testMode },
+  ): Promise<Omit<Doc<"customers">, "_id" | "_creationTime">> => {
     if (isTestMode(testMode)) {
-      const local = await ctx.runQuery(internal.lookup.customer, { id: customerId });
+      const local = await ctx.runQuery(internal.lookup.customer, { id: razorpayCustomerId });
       if (!local) throw razorpayError("RAZORPAY_NOT_FOUND");
       assertModeMatches(local, true);
-      return local;
+      const { _id, _creationTime, ...entity } = local;
+      return entity;
     }
-    const raw = await requestProvider("GET", `/customers/${encodeURIComponent(customerId)}`, {
-      idempotent: true,
-    });
-    if (record(raw).id !== customerId) throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
-    return ctx.runMutation(internal.mutations.putCustomer, {
-      raw: omitUndefined(raw),
-      observedAt: Date.now(),
-    });
+    const raw = await requestProvider(
+      "GET",
+      `/customers/${encodeURIComponent(razorpayCustomerId)}`,
+      {
+        idempotent: true,
+      },
+    );
+    if (parseProviderResponse(() => record(raw)).id !== razorpayCustomerId)
+      throw razorpayError("RAZORPAY_INVALID_RESPONSE");
+    return { ...customerFields(raw, Date.now()), testMode: false };
   },
 });
 
 export const edit = action({
   args: {
-    customerId: v.string(),
+    razorpayCustomerId: v.string(),
     name: v.optional(v.string()),
     email: v.optional(v.string()),
     contact: v.optional(v.string()),
@@ -248,7 +262,7 @@ export const edit = action({
   handler: async (ctx, args): Promise<Doc<"customers">> => {
     if (!args.name && !args.email && !args.contact)
       throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
-    const existing = await ctx.runQuery(internal.lookup.customer, { id: args.customerId });
+    const existing = await ctx.runQuery(internal.lookup.customer, { id: args.razorpayCustomerId });
     if (args.name !== undefined) validateCustomerName(args.name);
     if (args.email !== undefined) validateCustomerEmail(args.email);
     if (args.contact !== undefined) validateCustomerContact(args.contact);
@@ -259,17 +273,22 @@ export const edit = action({
       if (!existing) throw razorpayError("RAZORPAY_NOT_FOUND");
       raw = {
         ...existing.raw,
-        id: args.customerId,
+        id: args.razorpayCustomerId,
         name: args.name ?? existing.name,
         email: args.email ?? existing.email,
         contact: args.contact ?? existing.contact,
         created_at: Math.floor(existing.createdAt / 1000),
       };
     } else {
-      raw = await requestProvider("PUT", `/customers/${encodeURIComponent(args.customerId)}`, {
-        body: { name: args.name, email: args.email, contact: args.contact },
-      });
-      if (record(raw).id !== args.customerId) throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
+      raw = await requestProvider(
+        "PUT",
+        `/customers/${encodeURIComponent(args.razorpayCustomerId)}`,
+        {
+          body: { name: args.name, email: args.email, contact: args.contact },
+        },
+      );
+      if (parseProviderResponse(() => record(raw)).id !== args.razorpayCustomerId)
+        throw razorpayError("RAZORPAY_INVALID_RESPONSE");
     }
     return ctx.runMutation(internal.mutations.putCustomer, {
       raw: omitUndefined(raw),
@@ -279,14 +298,14 @@ export const edit = action({
   },
 });
 
-export const getByUser = query({
+export const get = query({
   args: { userId: v.string(), testMode: v.optional(v.boolean()) },
   returns: v.union(schema.doc("customers"), v.null()),
   handler: (ctx, { userId, testMode }) =>
     ctx.db
       .query("customers")
-      .withIndex("by_testMode_and_userId", (q) =>
-        q.eq("testMode", resolveMode(testMode)).eq("userId", userId),
+      .withIndex("by_userId_and_testMode", (q) =>
+        q.eq("userId", userId).eq("testMode", resolveMode(testMode)),
       )
       .first(),
 });

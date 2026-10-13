@@ -1,5 +1,5 @@
 import { stubRazorpayEnv, restoreRazorpayTestState } from "../test-helpers.js";
-import { hmacSha256Hex } from "../shared/crypto.js";
+import { computeHmacSha256Hex } from "../shared/crypto.js";
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { api } from "./_generated/api.js";
@@ -64,7 +64,7 @@ async function ingest(t: Harness, event: string, payload: unknown) {
   const body = JSON.stringify({ entity: "event", event, created_at: 1_567_674_600, payload });
   return t.action(api.webhooks.ingest, {
     body,
-    signature: await hmacSha256Hex(secret, body),
+    signature: await computeHmacSha256Hex(secret, body),
     eventId: `evt_rel_${sequence++}`,
   });
 }
@@ -118,9 +118,9 @@ test("a subscription event links its payment to the subscription and invoice", a
   ).toMatchObject({ status: "processed" });
   const row = await t.run((ctx) => ctx.db.query("payments").first());
   expect(row).toMatchObject({
-    razorpayId: "pay_rel",
-    subscriptionId: "sub_rel",
-    invoiceId: "inv_rel",
+    razorpayPaymentId: "pay_rel",
+    razorpaySubscriptionId: "sub_rel",
+    razorpayInvoiceId: "inv_rel",
     testMode: false,
   });
 
@@ -136,10 +136,10 @@ test("a subscription event links its payment to the subscription and invoice", a
     await t.run((ctx) =>
       ctx.db
         .query("payments")
-        .withIndex("by_razorpayId", (q) => q.eq("razorpayId", "pay_own"))
+        .withIndex("by_razorpayPaymentId", (q) => q.eq("razorpayPaymentId", "pay_own"))
         .first(),
     ),
-  ).toMatchObject({ subscriptionId: "sub_own", invoiceId: "inv_own" });
+  ).toMatchObject({ razorpaySubscriptionId: "sub_own", razorpayInvoiceId: "inv_own" });
 });
 
 test("matching refund and order relationships mirror both entities", async () => {

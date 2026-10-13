@@ -184,6 +184,9 @@ importers:
       convex:
         specifier: 1.46.0
         version: 1.46.0
+      convex-helpers:
+        specifier: 0.1.128
+        version: 0.1.128(@typescript/typescript6@6.0.2)(convex@1.46.0)(zod@4.6.5)
       convex-test:
         specifier: 0.0.60
         version: 0.0.60(convex@1.46.0)
@@ -1429,6 +1432,28 @@ packages:
   chai@6.3.0:
     resolution: {integrity: sha512-XWAtwJ6OHO+tj0EKCs0Y2UamnyOxseZWltU4x2U2wh8g4AigdjwvtUjvLP2tqkA/avxHEtzxNaqGq/YGNwckKg==}
     engines: {node: '>=18'}
+
+  convex-helpers@0.1.128:
+    resolution: {integrity: sha512-5n7uKsJrYnnybvuSAWgDQ9d5Avqk4CzFsJ22SXow4tHmVxSUH6qiJCeomWWxcLSfN9t9jpKIXNJiGJrjddS4ng==}
+    hasBin: true
+    peerDependencies:
+      '@standard-schema/spec': ^1.0.0
+      convex: ^1.46.0
+      hono: ^4.0.5
+      react: ^17.0.2 || ^18.0.0 || ^19.0.0
+      typescript: ^5.5 || ^6.0.0 || ^7.0.0
+      zod: ^3.25.0 || ^4.0.0
+    peerDependenciesMeta:
+      '@standard-schema/spec':
+        optional: true
+      hono:
+        optional: true
+      react:
+        optional: true
+      typescript:
+        optional: true
+      zod:
+        optional: true
 
   convex-test@0.0.60:
     resolution: {integrity: sha512-qCAFx+CO6bmpXNc9s1jZvw8NJPS4yM074ib87PUY675FsiaRRW4ALotEB+RbVCYDRMYxh623KMnYZBlrMJIv1Q==}
@@ -2922,6 +2947,13 @@ snapshots:
       qified: 0.10.1
 
   chai@6.3.0: {}
+
+  convex-helpers@0.1.128(@typescript/typescript6@6.0.2)(convex@1.46.0)(zod@4.6.5):
+    dependencies:
+      convex: 1.46.0
+    optionalDependencies:
+      typescript: '@typescript/typescript6@6.0.2'
+      zod: 4.6.5
 
   convex-test@0.0.60(convex@1.46.0):
     dependencies:

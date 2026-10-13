@@ -6,7 +6,8 @@
     "composite": false,
     "types": ["vitest/globals"],
     "module": "NodeNext",
-    "moduleResolution": "NodeNext"
+    "moduleResolution": "NodeNext",
+    "exactOptionalPropertyTypes": false
   },
   "include": ["src/**/*.ts", "example/**/*.ts"]
 }

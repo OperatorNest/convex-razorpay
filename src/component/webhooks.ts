@@ -1,6 +1,8 @@
+import { readConfig, requireConfigValue } from "./config.js";
 import { razorpayError, isRazorpayError } from "../shared/errors.js";
-import { maxWebhookBodyBytes, retentionMs } from "../shared/constants.js";
-import { sha256Hex } from "../shared/crypto.js";
+
+import { maxWebhookBodyBytes, webhookRetentionDays } from "../shared/constants.js";
+import { computeSha256Hex } from "../shared/crypto.js";
 import { v } from "convex/values";
 import type { Infer } from "convex/values";
 import { action, internalMutation, mutation } from "./_generated/server.js";
@@ -8,7 +10,7 @@ import type { MutationCtx } from "./_generated/server.js";
 import type { FunctionHandle } from "convex/server";
 import { internal } from "./_generated/api.js";
 import { env } from "./_generated/server.js";
-import { constantTimeEqualHex, hmacSha256Hex } from "../shared/crypto.js";
+import { compareHexSignatures, computeHmacSha256Hex } from "../shared/crypto.js";
 import { integerField, record, stringField } from "../shared/validation.js";
 import { resolveMode } from "./provider.js";
 import { orderFields, paymentFields, refundFields, subscriptionFields } from "./mapping.js";
@@ -20,12 +22,12 @@ type IngestResult = Infer<typeof webhookIngestResultValidator>;
 
 type Parsed = {
   event: string;
-  accountId?: string | undefined;
-  createdAtProvider: number;
+  razorpayAccountId?: string | undefined;
+  providerCreatedAt: number;
   entity?: Record<string, unknown> | undefined;
   secondary?: Record<string, unknown> | undefined;
-  subscriptionId?: string | undefined;
-  invoiceId?: string | undefined;
+  razorpaySubscriptionId?: string | undefined;
+  razorpayInvoiceId?: string | undefined;
 };
 
 function parseEnvelopeUnsafe(body: string): Parsed {
@@ -38,9 +40,10 @@ function parseEnvelopeUnsafe(body: string): Parsed {
   const envelope = record(value);
   if (envelope.entity !== "event") throw razorpayError("RAZORPAY_MALFORMED_WEBHOOK");
   const event = stringField(envelope.event);
-  const accountId = typeof envelope.account_id === "string" ? envelope.account_id : undefined;
-  const createdAtProvider = integerField(envelope.created_at) * 1000;
-  if (!Number.isSafeInteger(createdAtProvider)) throw razorpayError("RAZORPAY_MALFORMED_WEBHOOK");
+  const razorpayAccountId =
+    typeof envelope.account_id === "string" ? envelope.account_id : undefined;
+  const providerCreatedAt = integerField(envelope.created_at) * 1000;
+  if (!Number.isSafeInteger(providerCreatedAt)) throw razorpayError("RAZORPAY_MALFORMED_WEBHOOK");
   const payload = record(envelope.payload);
   const readEntity = (key: string) => {
     const wrapped = record(payload[key]);
@@ -48,20 +51,20 @@ function parseEnvelopeUnsafe(body: string): Parsed {
   };
   let entity: Record<string, unknown> | undefined;
   let secondary: Record<string, unknown> | undefined;
-  let subscriptionId: string | undefined;
-  let invoiceId: string | undefined;
+  let razorpaySubscriptionId: string | undefined;
+  let razorpayInvoiceId: string | undefined;
   if (
     event.startsWith("payment.") &&
     ["authorized", "captured", "failed"].includes(event.slice(8))
   ) {
     entity = readEntity("payment");
-    paymentFields(entity, createdAtProvider);
+    paymentFields(entity, providerCreatedAt);
   } else if (event === "order.paid") {
     entity = readEntity("order");
-    orderFields(entity, createdAtProvider);
+    orderFields(entity, providerCreatedAt);
     if (payload.payment) {
       secondary = readEntity("payment");
-      paymentFields(secondary, createdAtProvider);
+      paymentFields(secondary, providerCreatedAt);
       if (secondary.order_id !== entity.id) throw razorpayError("RAZORPAY_INVALID_ENTITY");
     }
   } else if (
@@ -69,10 +72,10 @@ function parseEnvelopeUnsafe(body: string): Parsed {
     ["created", "processed", "failed", "speed_changed"].includes(event.slice(7))
   ) {
     entity = readEntity("refund");
-    refundFields(entity, createdAtProvider);
+    refundFields(entity, providerCreatedAt);
     if (payload.payment) {
       secondary = readEntity("payment");
-      paymentFields(secondary, createdAtProvider);
+      paymentFields(secondary, providerCreatedAt);
       if (secondary.id !== entity.payment_id) throw razorpayError("RAZORPAY_INVALID_ENTITY");
     }
   } else if (
@@ -91,11 +94,11 @@ function parseEnvelopeUnsafe(body: string): Parsed {
     ].includes(event.slice(13))
   ) {
     entity = readEntity("subscription");
-    subscriptionFields(entity, createdAtProvider);
-    subscriptionId = typeof entity.id === "string" ? entity.id : undefined;
+    subscriptionFields(entity, providerCreatedAt);
+    razorpaySubscriptionId = typeof entity.id === "string" ? entity.id : undefined;
     if (payload.payment) {
       secondary = readEntity("payment");
-      paymentFields(secondary, createdAtProvider);
+      paymentFields(secondary, providerCreatedAt);
       if (secondary.subscription_id !== undefined && secondary.subscription_id !== entity.id) {
         throw razorpayError("RAZORPAY_INVALID_ENTITY");
       }
@@ -105,33 +108,50 @@ function parseEnvelopeUnsafe(body: string): Parsed {
       if (
         typeof invoice.id !== "string" ||
         !/^inv_[A-Za-z0-9_]+$/.test(invoice.id) ||
-        (invoice.subscription_id !== undefined && invoice.subscription_id !== subscriptionId) ||
+        (invoice.subscription_id !== undefined &&
+          invoice.subscription_id !== razorpaySubscriptionId) ||
         (secondary?.invoice_id !== undefined && secondary.invoice_id !== invoice.id) ||
         (invoice.payment_id !== undefined && invoice.payment_id !== secondary?.id)
       )
         throw razorpayError("RAZORPAY_INVALID_ENTITY");
-      invoiceId = invoice.id;
+      razorpayInvoiceId = invoice.id;
     }
   }
   if (secondary) {
-    subscriptionId ??=
+    razorpaySubscriptionId ??=
       typeof secondary.subscription_id === "string" ? secondary.subscription_id : undefined;
-    invoiceId ??= typeof secondary.invoice_id === "string" ? secondary.invoice_id : undefined;
+    razorpayInvoiceId ??=
+      typeof secondary.invoice_id === "string" ? secondary.invoice_id : undefined;
   }
-  return { event, accountId, createdAtProvider, entity, secondary, subscriptionId, invoiceId };
+  return {
+    event,
+    razorpayAccountId,
+    providerCreatedAt,
+    entity,
+    secondary,
+    razorpaySubscriptionId,
+    razorpayInvoiceId,
+  };
 }
 
 function parseEnvelope(body: string): Parsed {
   try {
     return parseEnvelopeUnsafe(body);
   } catch (error) {
-    if (isRazorpayError(error)) throw error;
+    if (isRazorpayError(error)) {
+      if (error.data.code === "RAZORPAY_INVALID_RESPONSE")
+        throw razorpayError("RAZORPAY_INVALID_ENTITY");
+      throw error;
+    }
     throw razorpayError("RAZORPAY_MALFORMED_WEBHOOK");
   }
 }
 
 function safeErrorCode(error: unknown): string {
-  if (isRazorpayError(error)) return error.data.code;
+  if (isRazorpayError(error))
+    return error.data.code === "RAZORPAY_INVALID_RESPONSE"
+      ? "RAZORPAY_INVALID_ENTITY"
+      : error.data.code;
   return "RAZORPAY_INVALID_ENTITY";
 }
 
@@ -144,15 +164,21 @@ export const ingest = action({
   },
   returns: webhookIngestResultValidator,
   handler: async (ctx, args): Promise<IngestResult> => {
-    if (!env.RAZORPAY_WEBHOOK_SECRET) throw razorpayError("RAZORPAY_WEBHOOK_SECRET_MISSING");
-    const current = await hmacSha256Hex(env.RAZORPAY_WEBHOOK_SECRET, args.body);
-    const validCurrent = constantTimeEqualHex(current, args.signature);
-    const previous = env.RAZORPAY_WEBHOOK_SECRET_PREVIOUS
-      ? await hmacSha256Hex(env.RAZORPAY_WEBHOOK_SECRET_PREVIOUS, args.body)
+    if (!readConfig(env).webhookSecret) throw razorpayError("RAZORPAY_NOT_CONFIGURED");
+    const current = await computeHmacSha256Hex(
+      requireConfigValue(readConfig(env).webhookSecret),
+      args.body,
+    );
+    const validCurrent = compareHexSignatures(current, args.signature);
+    const previous = readConfig(env).previousWebhookSecret
+      ? await computeHmacSha256Hex(
+          requireConfigValue(readConfig(env).previousWebhookSecret),
+          args.body,
+        )
       : current;
-    const validPrevious = constantTimeEqualHex(previous, args.signature);
+    const validPrevious = compareHexSignatures(previous, args.signature);
     if (!validCurrent && !validPrevious) throw razorpayError("RAZORPAY_INVALID_WEBHOOK_SIGNATURE");
-    const bodyHash = await sha256Hex(args.body);
+    const bodyHash = await computeSha256Hex(args.body);
     let parsed: Parsed | undefined;
     let errorCode: string | undefined;
     try {
@@ -166,12 +192,18 @@ export const ingest = action({
     return ctx.runMutation(internal.webhooks.apply, {
       eventId: args.eventId || `sha256:${bodyHash}`,
       event: parsed?.event ?? "unknown",
-      ...(parsed?.accountId === undefined ? {} : { accountId: parsed.accountId }),
+      ...(parsed?.razorpayAccountId === undefined
+        ? {}
+        : { razorpayAccountId: parsed.razorpayAccountId }),
       ...(parsed?.entity === undefined ? {} : { rawEntity: parsed.entity }),
       ...(parsed?.secondary === undefined ? {} : { rawSecondary: parsed.secondary }),
-      ...(parsed?.subscriptionId === undefined ? {} : { subscriptionId: parsed.subscriptionId }),
-      ...(parsed?.invoiceId === undefined ? {} : { invoiceId: parsed.invoiceId }),
-      createdAtProvider: parsed?.createdAtProvider ?? fallbackNow,
+      ...(parsed?.razorpaySubscriptionId === undefined
+        ? {}
+        : { razorpaySubscriptionId: parsed.razorpaySubscriptionId }),
+      ...(parsed?.razorpayInvoiceId === undefined
+        ? {}
+        : { razorpayInvoiceId: parsed.razorpayInvoiceId }),
+      providerCreatedAt: parsed?.providerCreatedAt ?? fallbackNow,
 
       testMode: resolveMode(),
       bodyHash,
@@ -186,35 +218,39 @@ export const applyEntities = internalMutation({
     event: v.string(),
     rawEntity: v.optional(v.record(v.string(), v.any())),
     rawSecondary: v.optional(v.record(v.string(), v.any())),
-    createdAtProvider: v.number(),
+    providerCreatedAt: v.number(),
     testMode: v.boolean(),
-    subscriptionId: v.optional(v.string()),
-    invoiceId: v.optional(v.string()),
+    razorpaySubscriptionId: v.optional(v.string()),
+    razorpayInvoiceId: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
     if (args.rawEntity) {
       const { testMode } = args;
       if (args.event.startsWith("payment."))
-        await applyPayment(ctx, args.rawEntity, args.createdAtProvider, { testMode });
+        await applyPayment(ctx, args.rawEntity, args.providerCreatedAt, { testMode });
       else if (args.event === "order.paid") {
-        await applyOrder(ctx, args.rawEntity, args.createdAtProvider, { testMode });
+        await applyOrder(ctx, args.rawEntity, args.providerCreatedAt, { testMode });
         if (args.rawSecondary)
-          await applyPayment(ctx, args.rawSecondary, args.createdAtProvider, { testMode });
+          await applyPayment(ctx, args.rawSecondary, args.providerCreatedAt, { testMode });
       } else if (args.event.startsWith("refund.")) {
         if (args.rawSecondary)
-          await applyPayment(ctx, args.rawSecondary, args.createdAtProvider, { testMode });
-        await applyRefund(ctx, args.rawEntity, args.createdAtProvider, { testMode });
+          await applyPayment(ctx, args.rawSecondary, args.providerCreatedAt, { testMode });
+        await applyRefund(ctx, args.rawEntity, args.providerCreatedAt, { testMode });
       } else if (args.event.startsWith("subscription.")) {
-        await applySubscription(ctx, args.rawEntity, args.createdAtProvider, {
+        await applySubscription(ctx, args.rawEntity, args.providerCreatedAt, {
           testMode,
-          webhookCreatedAtProvider: args.createdAtProvider,
+          webhookAt: args.providerCreatedAt,
         });
         if (args.rawSecondary)
-          await applyPayment(ctx, args.rawSecondary, args.createdAtProvider, {
+          await applyPayment(ctx, args.rawSecondary, args.providerCreatedAt, {
             testMode,
-            ...(args.subscriptionId === undefined ? {} : { subscriptionId: args.subscriptionId }),
-            ...(args.invoiceId === undefined ? {} : { invoiceId: args.invoiceId }),
+            ...(args.razorpaySubscriptionId === undefined
+              ? {}
+              : { razorpaySubscriptionId: args.razorpaySubscriptionId }),
+            ...(args.razorpayInvoiceId === undefined
+              ? {}
+              : { razorpayInvoiceId: args.razorpayInvoiceId }),
           });
       }
     }
@@ -226,16 +262,16 @@ export const apply = internalMutation({
   args: {
     eventId: v.string(),
     event: v.string(),
-    accountId: v.optional(v.string()),
+    razorpayAccountId: v.optional(v.string()),
     rawEntity: v.optional(v.record(v.string(), v.any())),
     rawSecondary: v.optional(v.record(v.string(), v.any())),
-    createdAtProvider: v.number(),
+    providerCreatedAt: v.number(),
     testMode: v.boolean(),
     bodyHash: v.string(),
     errorCode: v.optional(v.string()),
     callbackHandle: v.optional(v.string()),
-    subscriptionId: v.optional(v.string()),
-    invoiceId: v.optional(v.string()),
+    razorpaySubscriptionId: v.optional(v.string()),
+    razorpayInvoiceId: v.optional(v.string()),
   },
   returns: webhookIngestResultValidator,
   handler: async (ctx, args): Promise<IngestResult> => {
@@ -249,7 +285,7 @@ export const apply = internalMutation({
       .unique();
     if (byEventId || byBodyHash) return { status: "duplicate" };
     const receivedAt = Date.now();
-    const entityId = typeof args.rawEntity?.id === "string" ? args.rawEntity.id : undefined;
+    const razorpayEntityId = typeof args.rawEntity?.id === "string" ? args.rawEntity.id : undefined;
     let status: "processed" | "ignored" | "failed" = args.errorCode
       ? "failed"
       : args.rawEntity
@@ -262,10 +298,14 @@ export const apply = internalMutation({
           event: args.event,
           ...(args.rawEntity === undefined ? {} : { rawEntity: args.rawEntity }),
           ...(args.rawSecondary === undefined ? {} : { rawSecondary: args.rawSecondary }),
-          createdAtProvider: args.createdAtProvider,
+          providerCreatedAt: args.providerCreatedAt,
           testMode: args.testMode,
-          ...(args.subscriptionId === undefined ? {} : { subscriptionId: args.subscriptionId }),
-          ...(args.invoiceId === undefined ? {} : { invoiceId: args.invoiceId }),
+          ...(args.razorpaySubscriptionId === undefined
+            ? {}
+            : { razorpaySubscriptionId: args.razorpaySubscriptionId }),
+          ...(args.razorpayInvoiceId === undefined
+            ? {}
+            : { razorpayInvoiceId: args.razorpayInvoiceId }),
         });
       } catch (error) {
         status = "failed";
@@ -275,9 +315,11 @@ export const apply = internalMutation({
     await ctx.db.insert("webhookEvents", {
       eventId: args.eventId,
       event: args.event,
-      ...(args.accountId === undefined ? {} : { accountId: args.accountId }),
-      ...(entityId === undefined ? {} : { entityId }),
-      createdAtProvider: args.createdAtProvider,
+      ...(args.razorpayAccountId === undefined
+        ? {}
+        : { razorpayAccountId: args.razorpayAccountId }),
+      ...(razorpayEntityId === undefined ? {} : { razorpayEntityId }),
+      providerCreatedAt: args.providerCreatedAt,
       receivedAt,
       status,
       ...(errorCode === undefined ? {} : { errorCode }),
@@ -287,9 +329,11 @@ export const apply = internalMutation({
       const event = {
         eventId: args.eventId,
         event: args.event,
-        ...(entityId === undefined ? {} : { entityId }),
-        ...(args.accountId === undefined ? {} : { accountId: args.accountId }),
-        createdAtProvider: args.createdAtProvider,
+        ...(razorpayEntityId === undefined ? {} : { razorpayEntityId }),
+        ...(args.razorpayAccountId === undefined
+          ? {}
+          : { razorpayAccountId: args.razorpayAccountId }),
+        providerCreatedAt: args.providerCreatedAt,
       };
       // The app minted this opaque string with createFunctionHandle before calling ingest.
       // eslint-disable-next-line typescript/no-unsafe-type-assertion -- Convex transports branded function handles as strings across component boundaries.
@@ -303,9 +347,11 @@ export const apply = internalMutation({
             event: {
               eventId: args.eventId,
               event: args.event,
-              ...(entityId === undefined ? {} : { entityId }),
-              ...(args.accountId === undefined ? {} : { accountId: args.accountId }),
-              createdAtProvider: args.createdAtProvider,
+              ...(razorpayEntityId === undefined ? {} : { razorpayEntityId }),
+              ...(args.razorpayAccountId === undefined
+                ? {}
+                : { razorpayAccountId: args.razorpayAccountId }),
+              providerCreatedAt: args.providerCreatedAt,
             },
           }
         : {}),
@@ -336,7 +382,10 @@ export const cleanup = mutation({
   handler: (ctx, { before, batchSize }) =>
     deleteBatch(
       ctx,
-      Math.min(before ?? Date.now() - retentionMs, Date.now() - 24 * 60 * 60 * 1000),
+      Math.min(
+        before ?? Date.now() - webhookRetentionDays * 24 * 60 * 60_000,
+        Date.now() - 24 * 60 * 60 * 1000,
+      ),
       batchSize ?? 20,
     ),
 });
@@ -345,7 +394,7 @@ export const cleanupScheduled = internalMutation({
   args: { before: v.optional(v.number()) },
   returns: v.number(),
   handler: async (ctx, { before }): Promise<number> => {
-    const cutoff = before ?? Date.now() - retentionMs;
+    const cutoff = before ?? Date.now() - webhookRetentionDays * 24 * 60 * 60_000;
     const count = await deleteBatch(ctx, cutoff, 20);
     if (count === 20)
       await ctx.scheduler.runAfter(0, internal.webhooks.cleanupScheduled, { before: cutoff });

@@ -1,10 +1,16 @@
-import { isDefinitiveNoCreate, providerErrorCode, razorpayError } from "../shared/errors.js";
-import { v } from "convex/values";
-import { action, internalAction, query } from "./_generated/server.js";
-import { internal } from "./_generated/api.js";
+import { parseProviderResponse } from "../shared/providerErrors.js";
+import { paginationOptsValidator } from "convex/server";
+import { boundedPage } from "./pagination.js";
+import { paginator } from "convex-helpers/server/pagination";
+import { subscriptionFields } from "./mapping.js";
 import schema from "./schema.js";
 import type { Doc } from "./_generated/dataModel.js";
 import type { ActionCtx } from "./_generated/server.js";
+import { razorpayError } from "../shared/errors.js";
+import { isDefinitiveNoCreate, providerErrorCode } from "../shared/providerErrors.js";
+import { v } from "convex/values";
+import { action, internalAction, query, env, mutation } from "./_generated/server.js";
+import { internal } from "./_generated/api.js";
 import {
   assertModeMatches,
   findByIdempotencyKey,
@@ -13,7 +19,6 @@ import {
   requestProvider,
 } from "./provider.js";
 import {
-  boundedLimit,
   deterministicTestId,
   integerField,
   linkedNotes,
@@ -22,27 +27,34 @@ import {
   stableStringify,
   validateNotes,
 } from "../shared/validation.js";
-import { linkArgs, notesArg, validateIdempotencyKey } from "./validators.js";
-import { optionalLinkage } from "./validators.js";
+import {
+  linkArgs,
+  notesArg,
+  validateIdempotencyKey,
+  optionalLinkage,
+  timestampSeconds,
+} from "./validators.js";
+import { readConfig, requireConfigValue } from "./config.js";
+import { verifySubscriptionCheckout } from "../shared/crypto.js";
 
 export const reconcile = internalAction({
   args: {
-    key: v.string(),
-    fingerprint: v.string(),
+    idempotencyKey: v.string(),
+    requestFingerprint: v.string(),
     userId: v.optional(v.string()),
     externalId: v.optional(v.string()),
     metadata: v.optional(v.record(v.string(), v.string())),
   },
   returns: schema.doc("subscriptions"),
   handler: async (ctx, args): Promise<Doc<"subscriptions">> => {
-    const raw = await findByIdempotencyKey("subscription", args.key);
+    const raw = await findByIdempotencyKey("subscription", args.idempotencyKey);
     return ctx.runMutation(internal.mutations.putSubscription, {
       raw,
       observedAt: Date.now(),
       ...optionalLinkage({
         ...args,
-        idempotencyKey: args.key,
-        requestFingerprint: args.fingerprint,
+        idempotencyKey: args.idempotencyKey,
+        requestFingerprint: args.requestFingerprint,
         createdThroughComponent: true,
         testMode: false,
       }),
@@ -52,13 +64,13 @@ export const reconcile = internalAction({
 
 export const create = action({
   args: {
-    planId: v.string(),
+    razorpayPlanId: v.string(),
     totalCount: v.number(),
-    quantity: v.optional(v.number()),
+    quantity: v.number(),
     startAt: v.optional(v.number()),
-    expireBy: v.optional(v.number()),
-    customerNotify: v.optional(v.boolean()),
-    offerId: v.optional(v.string()),
+    expiresAt: v.optional(v.number()),
+    customerNotify: v.boolean(),
+    razorpayOfferId: v.optional(v.string()),
     notes: notesArg,
     ...linkArgs,
   },
@@ -69,36 +81,39 @@ export const create = action({
     if (
       !Number.isSafeInteger(args.totalCount) ||
       args.totalCount < 1 ||
-      (args.quantity !== undefined && (!Number.isSafeInteger(args.quantity) || args.quantity < 1))
+      !Number.isSafeInteger(args.quantity) ||
+      args.quantity < 1
     ) {
       throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     }
+    timestampSeconds(args.startAt);
+    timestampSeconds(args.expiresAt);
     const notes = validateNotes({
       ...linkedNotes(args.notes, args.userId, args.externalId, args.metadata),
       ...(args.idempotencyKey ? { operatornestIdempotencyKey: args.idempotencyKey } : {}),
     });
-    const fingerprint = stableStringify({
+    const requestFingerprint = stableStringify({
       testMode,
-      planId: args.planId,
+      razorpayPlanId: args.razorpayPlanId,
       totalCount: args.totalCount,
-      quantity: args.quantity ?? 1,
+      quantity: args.quantity,
       startAt: args.startAt,
-      expireBy: args.expireBy,
+      expiresAt: args.expiresAt,
       customerNotify: args.customerNotify,
-      offerId: args.offerId,
+      razorpayOfferId: args.razorpayOfferId,
       notes,
     });
     let shouldReconcile = false;
     if (args.idempotencyKey) {
       const claim = await ctx.runMutation(internal.idempotency.claim, {
         resource: "subscription",
-        key: args.idempotencyKey,
-        fingerprint,
+        idempotencyKey: args.idempotencyKey,
+        requestFingerprint,
         testMode,
       });
       if (claim === "completed") {
         const existing = await ctx.runQuery(internal.mutations.subscriptionByKey, {
-          key: args.idempotencyKey,
+          idempotencyKey: args.idempotencyKey,
           testMode,
         });
         if (!existing) throw razorpayError("RAZORPAY_NOT_FOUND");
@@ -112,27 +127,27 @@ export const create = action({
       raw = {
         id: await deterministicTestId("sub", [
           args.idempotencyKey ?? crypto.randomUUID(),
-          args.planId,
+          args.razorpayPlanId,
           args.totalCount,
         ]),
         entity: "subscription",
-        plan_id: args.planId,
+        plan_id: args.razorpayPlanId,
         status: "created",
-        quantity: args.quantity ?? 1,
+        quantity: args.quantity,
         total_count: args.totalCount,
         paid_count: 0,
         remaining_count: args.totalCount,
-        start_at: args.startAt,
-        expire_by: args.expireBy,
-        customer_notify: args.customerNotify ?? true,
+        start_at: timestampSeconds(args.startAt),
+        expire_by: timestampSeconds(args.expiresAt),
+        customer_notify: args.customerNotify,
         notes,
         created_at: Math.floor(Date.now() / 1000),
       };
     } else {
       if (shouldReconcile && args.idempotencyKey) {
         return ctx.runAction(internal.subscriptions.reconcile, {
-          key: args.idempotencyKey,
-          fingerprint,
+          idempotencyKey: args.idempotencyKey,
+          requestFingerprint,
           ...(args.userId === undefined ? {} : { userId: args.userId }),
           ...(args.externalId === undefined ? {} : { externalId: args.externalId }),
           ...(args.metadata === undefined ? {} : { metadata: args.metadata }),
@@ -141,13 +156,13 @@ export const create = action({
       try {
         raw = await requestProvider("POST", "/subscriptions", {
           body: {
-            plan_id: args.planId,
+            plan_id: args.razorpayPlanId,
             total_count: args.totalCount,
             quantity: args.quantity,
-            start_at: args.startAt,
-            expire_by: args.expireBy,
+            start_at: timestampSeconds(args.startAt),
+            expire_by: timestampSeconds(args.expiresAt),
             customer_notify: args.customerNotify,
-            offer_id: args.offerId,
+            offer_id: args.razorpayOfferId,
             notes,
           },
         });
@@ -155,8 +170,8 @@ export const create = action({
         if (args.idempotencyKey && isDefinitiveNoCreate(error)) {
           await ctx.runMutation(internal.idempotency.fail, {
             resource: "subscription",
-            key: args.idempotencyKey,
-            fingerprint,
+            idempotencyKey: args.idempotencyKey,
+            requestFingerprint,
             testMode,
             errorCode: providerErrorCode(error),
           });
@@ -172,7 +187,7 @@ export const create = action({
         externalId: args.externalId,
         metadata: args.metadata,
         idempotencyKey: args.idempotencyKey,
-        requestFingerprint: fingerprint,
+        requestFingerprint,
         createdThroughComponent: true,
         testMode,
       }),
@@ -182,28 +197,35 @@ export const create = action({
 });
 
 export const fetch = action({
-  args: { subscriptionId: v.string(), testMode: v.optional(v.boolean()) },
-  returns: schema.doc("subscriptions"),
-  handler: async (ctx, { subscriptionId, testMode }): Promise<Doc<"subscriptions">> => {
+  args: { razorpaySubscriptionId: v.string(), testMode: v.optional(v.boolean()) },
+  returns: v.object(schema.tables.subscriptions.validator.fields),
+  handler: async (
+    ctx,
+    { razorpaySubscriptionId, testMode },
+  ): Promise<Omit<Doc<"subscriptions">, "_id" | "_creationTime">> => {
     if (isTestMode(testMode)) {
-      const local = await ctx.runQuery(internal.lookup.subscription, { id: subscriptionId });
+      const local = await ctx.runQuery(internal.lookup.subscription, {
+        id: razorpaySubscriptionId,
+      });
       if (!local) throw razorpayError("RAZORPAY_NOT_FOUND");
       assertModeMatches(local, true);
-      return local;
+      const { _id, _creationTime, ...entity } = local;
+      return entity;
     }
     const raw = await requestProvider(
       "GET",
-      `/subscriptions/${encodeURIComponent(subscriptionId)}`,
+      `/subscriptions/${encodeURIComponent(razorpaySubscriptionId)}`,
       { idempotent: true },
     );
-    if (record(raw).id !== subscriptionId) throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
-    return ctx.runMutation(internal.mutations.putSubscription, { raw, observedAt: Date.now() });
+    if (parseProviderResponse(() => record(raw)).id !== razorpaySubscriptionId)
+      throw razorpayError("RAZORPAY_INVALID_RESPONSE");
+    return { ...subscriptionFields(raw, Date.now()), testMode: false };
   },
 });
 
 async function change(
   ctx: ActionCtx,
-  subscriptionId: string,
+  razorpaySubscriptionId: string,
   operation: "cancel" | "pause" | "resume" | "update",
   body: Record<string, unknown>,
   requestedTestMode?: boolean,
@@ -212,11 +234,13 @@ async function change(
   let observedAt = Date.now();
   const testMode = isTestMode(requestedTestMode);
   if (testMode) {
-    const existing = await ctx.runQuery(internal.lookup.subscription, { id: subscriptionId });
+    const existing = await ctx.runQuery(internal.lookup.subscription, {
+      id: razorpaySubscriptionId,
+    });
     if (!existing) throw razorpayError("RAZORPAY_NOT_FOUND");
 
     assertModeMatches(existing, true);
-    observedAt = Math.max(observedAt, existing.updatedAtProvider + 1);
+    observedAt = Math.max(observedAt, existing.providerUpdatedAt + 1);
     let status = existing.status;
     if (operation === "cancel" && body.cancel_at_cycle_end !== 1) status = "cancelled";
     if (operation === "pause") status = "paused";
@@ -244,9 +268,9 @@ async function change(
       : existingCustomerNotify;
     raw = {
       ...existing.raw,
-      id: subscriptionId,
+      id: razorpaySubscriptionId,
       status,
-      plan_id: applyNow ? (body.plan_id ?? existing.planId) : existing.planId,
+      plan_id: applyNow ? (body.plan_id ?? existing.razorpayPlanId) : existing.razorpayPlanId,
       quantity: applyNow ? (body.quantity ?? existing.quantity) : existing.quantity,
       remaining_count: remainingCount,
       total_count: Math.max(existing.totalCount, existing.paidCount + remainingCount),
@@ -260,10 +284,11 @@ async function change(
     const method = operation === "update" ? "PATCH" : "POST";
     const path =
       operation === "update"
-        ? `/subscriptions/${encodeURIComponent(subscriptionId)}`
-        : `/subscriptions/${encodeURIComponent(subscriptionId)}/${operation}`;
+        ? `/subscriptions/${encodeURIComponent(razorpaySubscriptionId)}`
+        : `/subscriptions/${encodeURIComponent(razorpaySubscriptionId)}/${operation}`;
     raw = await requestProvider(method, path, { body });
-    if (record(raw).id !== subscriptionId) throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
+    if (parseProviderResponse(() => record(raw)).id !== razorpaySubscriptionId)
+      throw razorpayError("RAZORPAY_INVALID_RESPONSE");
   }
   return ctx.runMutation(internal.mutations.putSubscription, {
     raw: omitUndefined(raw),
@@ -274,41 +299,43 @@ async function change(
 
 export const cancel = action({
   args: {
-    subscriptionId: v.string(),
-    cancelAtCycleEnd: v.optional(v.boolean()),
+    razorpaySubscriptionId: v.string(),
     testMode: v.optional(v.boolean()),
   },
   returns: schema.doc("subscriptions"),
-  handler: (ctx, { subscriptionId, cancelAtCycleEnd, testMode }) =>
-    change(
-      ctx,
-      subscriptionId,
-      "cancel",
-      { cancel_at_cycle_end: cancelAtCycleEnd ? 1 : 0 },
-      testMode,
-    ),
+  handler: (ctx, { razorpaySubscriptionId, testMode }) =>
+    change(ctx, razorpaySubscriptionId, "cancel", { cancel_at_cycle_end: 0 }, testMode),
+});
+export const cancelAtCycleEnd = action({
+  args: {
+    razorpaySubscriptionId: v.string(),
+    testMode: v.optional(v.boolean()),
+  },
+  returns: schema.doc("subscriptions"),
+  handler: (ctx, { razorpaySubscriptionId, testMode }) =>
+    change(ctx, razorpaySubscriptionId, "cancel", { cancel_at_cycle_end: 1 }, testMode),
 });
 export const pause = action({
-  args: { subscriptionId: v.string(), testMode: v.optional(v.boolean()) },
+  args: { razorpaySubscriptionId: v.string(), testMode: v.optional(v.boolean()) },
   returns: schema.doc("subscriptions"),
-  handler: (ctx, { subscriptionId, testMode }) =>
-    change(ctx, subscriptionId, "pause", { pause_at: "now" }, testMode),
+  handler: (ctx, { razorpaySubscriptionId, testMode }) =>
+    change(ctx, razorpaySubscriptionId, "pause", { pause_at: "now" }, testMode),
 });
 export const resume = action({
-  args: { subscriptionId: v.string(), testMode: v.optional(v.boolean()) },
+  args: { razorpaySubscriptionId: v.string(), testMode: v.optional(v.boolean()) },
   returns: schema.doc("subscriptions"),
-  handler: (ctx, { subscriptionId, testMode }) =>
-    change(ctx, subscriptionId, "resume", { resume_at: "now" }, testMode),
+  handler: (ctx, { razorpaySubscriptionId, testMode }) =>
+    change(ctx, razorpaySubscriptionId, "resume", { resume_at: "now" }, testMode),
 });
 export const update = action({
   args: {
-    subscriptionId: v.string(),
-    planId: v.optional(v.string()),
-    offerId: v.optional(v.string()),
+    razorpaySubscriptionId: v.string(),
+    razorpayPlanId: v.optional(v.string()),
+    razorpayOfferId: v.optional(v.string()),
     quantity: v.optional(v.number()),
     remainingCount: v.optional(v.number()),
     startAt: v.optional(v.number()),
-    scheduleChangeAt: v.optional(v.union(v.literal("now"), v.literal("cycle_end"))),
+    scheduleChangeAt: v.union(v.literal("now"), v.literal("cycle_end")),
     customerNotify: v.optional(v.boolean()),
     testMode: v.optional(v.boolean()),
   },
@@ -316,8 +343,8 @@ export const update = action({
   handler: (ctx, args) => {
     if (
       ![
-        args.planId,
-        args.offerId,
+        args.razorpayPlanId,
+        args.razorpayOfferId,
         args.quantity,
         args.remainingCount,
         args.startAt,
@@ -336,14 +363,14 @@ export const update = action({
     }
     return change(
       ctx,
-      args.subscriptionId,
+      args.razorpaySubscriptionId,
       "update",
       {
-        plan_id: args.planId,
-        offer_id: args.offerId,
+        plan_id: args.razorpayPlanId,
+        offer_id: args.razorpayOfferId,
         quantity: args.quantity,
         remaining_count: args.remainingCount,
-        start_at: args.startAt,
+        start_at: timestampSeconds(args.startAt),
         schedule_change_at: args.scheduleChangeAt,
         customer_notify: args.customerNotify,
       },
@@ -352,16 +379,22 @@ export const update = action({
   },
 });
 
-export const getForUser = query({
+export const get = query({
   args: {
     userId: v.string(),
-    statuses: v.optional(v.array(v.string())),
+    statuses: v.optional(v.array(schema.tables.subscriptions.validator.fields.status)),
     testMode: v.optional(v.boolean()),
   },
   returns: v.union(schema.doc("subscriptions"), v.null()),
   handler: async (ctx, { userId, statuses, testMode }) => {
     if (statuses && statuses.length > 20) throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
-    const priority = ["active", "authenticated", "pending", "halted", "paused"];
+    const priority: Doc<"subscriptions">["status"][] = [
+      "active",
+      "authenticated",
+      "pending",
+      "halted",
+      "paused",
+    ];
     const requested = statuses ? [...new Set(statuses)] : undefined;
     const liveStatuses = priority.filter((status) => !requested || requested.includes(status));
     const otherStatuses = requested?.filter((status) => !priority.includes(status));
@@ -398,22 +431,117 @@ export const getForUser = query({
     }
     return ctx.db
       .query("subscriptions")
-      .withIndex("by_testMode_and_userId", (q) =>
-        q.eq("testMode", resolveMode(testMode)).eq("userId", userId),
+      .withIndex("by_userId_and_testMode_and_createdAt", (q) =>
+        q.eq("userId", userId).eq("testMode", resolveMode(testMode)),
       )
       .order("desc")
       .first();
   },
 });
-export const listByUser = query({
-  args: { userId: v.string(), limit: v.optional(v.number()), testMode: v.optional(v.boolean()) },
-  returns: v.array(schema.doc("subscriptions")),
-  handler: (ctx, { userId, limit, testMode }) =>
-    ctx.db
-      .query("subscriptions")
-      .withIndex("by_testMode_and_userId", (q) =>
-        q.eq("testMode", resolveMode(testMode)).eq("userId", userId),
-      )
-      .order("desc")
-      .take(boundedLimit(limit)),
+export const list = query({
+  args: {
+    userId: v.string(),
+    paginationOpts: paginationOptsValidator,
+    testMode: v.optional(v.boolean()),
+  },
+  returns: v.object({
+    page: v.array(schema.doc("subscriptions")),
+    isDone: v.boolean(),
+    continueCursor: v.string(),
+  }),
+  handler: (ctx, { userId, paginationOpts, testMode }) =>
+    boundedPage(
+      paginator(ctx.db, schema)
+        .query("subscriptions")
+        .withIndex("by_userId_and_testMode_and_createdAt", (q) =>
+          q.eq("userId", userId).eq("testMode", resolveMode(testMode)),
+        )
+        .order("desc"),
+      paginationOpts,
+    ),
+});
+
+export const verifyCheckout = action({
+  args: {
+    razorpaySubscriptionId: v.string(),
+    razorpayPaymentId: v.string(),
+    signature: v.string(),
+
+    userId: v.optional(v.string()),
+    testMode: v.optional(v.boolean()),
+  },
+  returns: schema.doc("payments"),
+  handler: async (ctx, args): Promise<Doc<"payments">> => {
+    if (
+      !requireConfigValue(readConfig(env).keySecret) ||
+      !(await verifySubscriptionCheckout(
+        requireConfigValue(readConfig(env).keySecret),
+        args.razorpaySubscriptionId,
+        args.razorpayPaymentId,
+        args.signature,
+      ))
+    ) {
+      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
+    }
+    const mirrored = await ctx.runQuery(internal.lookup.subscription, {
+      id: args.razorpaySubscriptionId,
+    });
+    if (!mirrored) throw razorpayError("RAZORPAY_NOT_FOUND");
+    if (mirrored.createdThroughComponent !== true) {
+      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
+    }
+    const testMode = isTestMode(args.testMode);
+    assertModeMatches(mirrored, testMode);
+    if (args.userId !== undefined && mirrored.userId !== args.userId) {
+      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
+    }
+    if (testMode) {
+      const localPayment = await ctx.runQuery(internal.lookup.payment, {
+        id: args.razorpayPaymentId,
+      });
+      if (!localPayment) throw razorpayError("RAZORPAY_NOT_FOUND");
+      assertModeMatches(localPayment, true);
+    } else {
+      const subscription = await requestProvider(
+        "GET",
+        `/subscriptions/${encodeURIComponent(args.razorpaySubscriptionId)}`,
+        { idempotent: true },
+      );
+      if (record(subscription).id !== args.razorpaySubscriptionId)
+        throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
+      await ctx.runMutation(internal.mutations.putSubscription, {
+        raw: subscription,
+        observedAt: Date.now(),
+        testMode: false,
+      });
+      const payment = await requestProvider(
+        "GET",
+        `/payments/${encodeURIComponent(args.razorpayPaymentId)}`,
+        { idempotent: true },
+      );
+      if (record(payment).id !== args.razorpayPaymentId)
+        throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
+      await ctx.runMutation(internal.mutations.putPayment, {
+        raw: payment,
+        observedAt: Date.now(),
+        testMode: false,
+      });
+    }
+    return ctx.runMutation(internal.mutations.markVerified, {
+      razorpayPaymentId: args.razorpayPaymentId,
+      razorpaySubscriptionId: args.razorpaySubscriptionId,
+      testMode,
+    });
+  },
+});
+
+export const releaseIdempotency = mutation({
+  args: { idempotencyKey: v.string(), testMode: v.optional(v.boolean()) },
+  returns: v.boolean(),
+  handler: (ctx, args): Promise<boolean> =>
+    ctx.runMutation(internal.idempotency.release, {
+      resource: "subscription",
+      idempotencyKey: args.idempotencyKey,
+      testMode: args.testMode,
+    }),
 });

@@ -113,12 +113,15 @@ describe("provider entity parsing", () => {
   for (const fixture of cases) {
     test(`${fixture.kind}: accepts documented shape and nullable optionals`, () => {
       const parsed = fixture.parse(fixture.raw, observedAt);
-      expect(parsed.razorpayId).toBe(fixture.id);
+      expect(parsed).toHaveProperty(
+        `razorpay${fixture.kind[0]?.toUpperCase()}${fixture.kind.slice(1)}Id`,
+        fixture.id,
+      );
       expect(parsed.notes).toEqual({});
       expect(parsed.createdAt).toBe(1567674599000);
-      expect(parsed.updatedAtProvider).toBe(observedAt);
+      expect(parsed.providerUpdatedAt).toBe(observedAt);
       expect(
-        fixture.parse({ ...fixture.raw, updated_at: 1567674600 }, observedAt).updatedAtProvider,
+        fixture.parse({ ...fixture.raw, updated_at: 1567674600 }, observedAt).providerUpdatedAt,
       ).toBe(1567674600000);
     });
 

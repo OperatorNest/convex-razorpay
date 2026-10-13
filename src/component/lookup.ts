@@ -10,7 +10,7 @@ export const order = internalQuery({
   handler: (ctx, { id }) =>
     ctx.db
       .query("orders")
-      .withIndex("by_razorpayId", (q) => q.eq("razorpayId", id))
+      .withIndex("by_razorpayOrderId", (q) => q.eq("razorpayOrderId", id))
       .unique(),
 });
 export const payment = internalQuery({
@@ -19,7 +19,7 @@ export const payment = internalQuery({
   handler: (ctx, { id }) =>
     ctx.db
       .query("payments")
-      .withIndex("by_razorpayId", (q) => q.eq("razorpayId", id))
+      .withIndex("by_razorpayPaymentId", (q) => q.eq("razorpayPaymentId", id))
       .unique(),
 });
 export const refund = internalQuery({
@@ -28,7 +28,7 @@ export const refund = internalQuery({
   handler: (ctx, { id }) =>
     ctx.db
       .query("refunds")
-      .withIndex("by_razorpayId", (q) => q.eq("razorpayId", id))
+      .withIndex("by_razorpayRefundId", (q) => q.eq("razorpayRefundId", id))
       .unique(),
 });
 export const customer = internalQuery({
@@ -37,7 +37,7 @@ export const customer = internalQuery({
   handler: (ctx, { id }) =>
     ctx.db
       .query("customers")
-      .withIndex("by_razorpayId", (q) => q.eq("razorpayId", id))
+      .withIndex("by_razorpayCustomerId", (q) => q.eq("razorpayCustomerId", id))
       .unique(),
 });
 export const plan = internalQuery({
@@ -46,7 +46,7 @@ export const plan = internalQuery({
   handler: (ctx, { id }) =>
     ctx.db
       .query("plans")
-      .withIndex("by_razorpayId", (q) => q.eq("razorpayId", id))
+      .withIndex("by_razorpayPlanId", (q) => q.eq("razorpayPlanId", id))
       .unique(),
 });
 export const subscription = internalQuery({
@@ -55,17 +55,17 @@ export const subscription = internalQuery({
   handler: (ctx, { id }) =>
     ctx.db
       .query("subscriptions")
-      .withIndex("by_razorpayId", (q) => q.eq("razorpayId", id))
+      .withIndex("by_razorpaySubscriptionId", (q) => q.eq("razorpaySubscriptionId", id))
       .unique(),
 });
 export const paymentsForOrder = internalQuery({
-  args: { orderId: v.string(), limit: v.number(), testMode: v.boolean() },
+  args: { razorpayOrderId: v.string(), limit: v.number(), testMode: v.boolean() },
   returns: v.array(schema.doc("payments")),
-  handler: (ctx, { orderId, limit, testMode }) =>
+  handler: (ctx, { razorpayOrderId, limit, testMode }) =>
     ctx.db
       .query("payments")
-      .withIndex("by_orderId_and_testMode", (q) =>
-        q.eq("orderId", orderId).eq("testMode", testMode),
+      .withIndex("by_razorpayOrderId_and_testMode", (q) =>
+        q.eq("razorpayOrderId", razorpayOrderId).eq("testMode", testMode),
       )
       .take(boundedLimit(limit)),
 });
@@ -103,6 +103,8 @@ export const subscriptionsForUser = internalQuery({
   handler: (ctx, { userId, limit, testMode }) =>
     ctx.db
       .query("subscriptions")
-      .withIndex("by_testMode_and_userId", (q) => q.eq("testMode", testMode).eq("userId", userId))
+      .withIndex("by_userId_and_testMode_and_createdAt", (q) =>
+        q.eq("userId", userId).eq("testMode", testMode),
+      )
       .take(boundedLimit(limit)),
 });

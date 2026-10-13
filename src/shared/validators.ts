@@ -3,9 +3,9 @@ import { v } from "convex/values";
 export const webhookEventValidator = v.object({
   eventId: v.string(),
   event: v.string(),
-  entityId: v.optional(v.string()),
-  accountId: v.optional(v.string()),
-  createdAtProvider: v.number(),
+  razorpayEntityId: v.optional(v.string()),
+  razorpayAccountId: v.optional(v.string()),
+  providerCreatedAt: v.number(),
 });
 
 export const webhookIngestResultValidator = v.object({

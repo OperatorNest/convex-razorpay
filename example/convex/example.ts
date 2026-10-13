@@ -1,4 +1,4 @@
-import { Razorpay, sha256Hex } from "@operatornest/convex-razorpay";
+import { Razorpay, computeSha256Hex } from "@operatornest/convex-razorpay";
 import { ConvexError, v } from "convex/values";
 import { components } from "./_generated/api.js";
 import { action, env, query, type ActionCtx, type QueryCtx } from "./_generated/server.js";
@@ -19,7 +19,7 @@ async function requireUser(ctx: Pick<ActionCtx | QueryCtx, "auth">) {
 export const createOrder = action({
   args: { cartId: v.string() },
   returns: v.object({
-    orderId: v.string(),
+    razorpayOrderId: v.string(),
     amount: v.number(),
     currency: v.string(),
     keyId: v.optional(v.string()),
@@ -28,15 +28,16 @@ export const createOrder = action({
     const identity = await requireUser(ctx);
     if (!cartId || cartId.length > 128)
       throw new ConvexError({ code: "APP_INVALID_CART", message: "Invalid cart id" });
-    const idempotencyKey = await sha256Hex(`${identity.tokenIdentifier}|${cartId}`);
+    const idempotencyKey = await computeSha256Hex(`${identity.tokenIdentifier}|${cartId}`);
     const order = await razorpay.orders.create(ctx, {
+      partialPayment: false,
       amount: demoPrice,
       currency: demoCurrency,
       userId: identity.tokenIdentifier,
       idempotencyKey,
     });
     return {
-      orderId: order.razorpayId,
+      razorpayOrderId: order.razorpayOrderId,
       amount: order.amount,
       currency: order.currency,
       ...(order.keyId === undefined ? {} : { keyId: order.keyId }),
@@ -45,17 +46,22 @@ export const createOrder = action({
 });
 
 export const getOrder = query({
-  args: { orderId: v.string() },
+  args: { razorpayOrderId: v.string() },
   returns: v.union(
-    v.object({ orderId: v.string(), amount: v.number(), currency: v.string(), status: v.string() }),
+    v.object({
+      razorpayOrderId: v.string(),
+      amount: v.number(),
+      currency: v.string(),
+      status: v.string(),
+    }),
     v.null(),
   ),
-  handler: async (ctx, { orderId }) => {
+  handler: async (ctx, { razorpayOrderId }) => {
     const identity = await requireUser(ctx);
-    const order = await razorpay.orders.get(ctx, { orderId });
+    const order = await razorpay.orders.get(ctx, { razorpayOrderId });
     if (!order || order.userId !== identity.tokenIdentifier) return null;
     return {
-      orderId: order.razorpayId,
+      razorpayOrderId: order.razorpayOrderId,
       amount: order.amount,
       currency: order.currency,
       status: order.status,

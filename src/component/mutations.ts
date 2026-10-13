@@ -1,4 +1,5 @@
-import { getOrThrow, razorpayError } from "../shared/errors.js";
+import { razorpayError } from "../shared/errors.js";
+import { getOrThrow } from "../shared/providerErrors.js";
 import { v } from "convex/values";
 import { internalMutation, internalQuery } from "./_generated/server.js";
 import schema from "./schema.js";
@@ -42,8 +43,8 @@ export const putRefund = internalMutation({
 });
 export const putTestRefund = internalMutation({
   args: {
-    refundId: v.string(),
-    paymentId: v.string(),
+    razorpayRefundId: v.string(),
+    razorpayPaymentId: v.string(),
     amount: v.optional(v.number()),
     speed: v.optional(v.string()),
     receipt: v.optional(v.string()),
@@ -67,7 +68,7 @@ export const putTestRefund = internalMutation({
     }
     const payment = await ctx.db
       .query("payments")
-      .withIndex("by_razorpayId", (q) => q.eq("razorpayId", args.paymentId))
+      .withIndex("by_razorpayPaymentId", (q) => q.eq("razorpayPaymentId", args.razorpayPaymentId))
       .first();
     if (!payment) throw razorpayError("RAZORPAY_NOT_FOUND");
 
@@ -83,9 +84,9 @@ export const putTestRefund = internalMutation({
     }
     const now = Date.now();
     const raw = {
-      id: args.refundId,
+      id: args.razorpayRefundId,
       entity: "refund",
-      payment_id: args.paymentId,
+      payment_id: args.razorpayPaymentId,
       amount,
       currency: payment.currency,
       status: "processed",
@@ -99,7 +100,7 @@ export const putTestRefund = internalMutation({
     const totalRefunded = payment.amountRefunded + amount;
     const paymentRaw = {
       ...record(payment.raw),
-      id: payment.razorpayId,
+      id: payment.razorpayPaymentId,
       amount: payment.amount,
       currency: payment.currency,
       status: totalRefunded === payment.amount ? "refunded" : "captured",
@@ -135,25 +136,25 @@ export const putSubscription = internalMutation({
 });
 export const markVerified = internalMutation({
   args: {
-    paymentId: v.string(),
+    razorpayPaymentId: v.string(),
     testMode: v.boolean(),
-    orderId: v.optional(v.string()),
-    subscriptionId: v.optional(v.string()),
+    razorpayOrderId: v.optional(v.string()),
+    razorpaySubscriptionId: v.optional(v.string()),
   },
   returns: schema.doc("payments"),
   handler: async (ctx, args) => {
     const payment = await ctx.db
       .query("payments")
-      .withIndex("by_razorpayId", (q) => q.eq("razorpayId", args.paymentId))
+      .withIndex("by_razorpayPaymentId", (q) => q.eq("razorpayPaymentId", args.razorpayPaymentId))
       .first();
     if (!payment) throw razorpayError("RAZORPAY_NOT_FOUND");
 
     assertModeMatches(payment, args.testMode);
     if (
-      (args.orderId && payment.orderId !== args.orderId) ||
-      (args.subscriptionId &&
-        payment.subscriptionId &&
-        payment.subscriptionId !== args.subscriptionId)
+      (args.razorpayOrderId && payment.razorpayOrderId !== args.razorpayOrderId) ||
+      (args.razorpaySubscriptionId &&
+        payment.razorpaySubscriptionId &&
+        payment.razorpaySubscriptionId !== args.razorpaySubscriptionId)
     ) {
       throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     }
@@ -162,39 +163,39 @@ export const markVerified = internalMutation({
     }
     await ctx.db.patch("payments", payment["_id"], {
       verified: true,
-      subscriptionId: args.subscriptionId ?? payment.subscriptionId,
+      razorpaySubscriptionId: args.razorpaySubscriptionId ?? payment.razorpaySubscriptionId,
     });
     return getOrThrow(await ctx.db.get("payments", payment["_id"]));
   },
 });
 
 export const orderByKey = internalQuery({
-  args: { key: v.string(), testMode: v.boolean() },
+  args: { idempotencyKey: v.string(), testMode: v.boolean() },
   returns: v.union(schema.doc("orders"), v.null()),
-  handler: (ctx, { key, testMode }) =>
+  handler: (ctx, { idempotencyKey, testMode }) =>
     ctx.db
       .query("orders")
       .withIndex("by_idempotencyKey_and_testMode", (q) =>
-        q.eq("idempotencyKey", key).eq("testMode", testMode),
+        q.eq("idempotencyKey", idempotencyKey).eq("testMode", testMode),
       )
       .first(),
 });
 export const refundByKey = internalQuery({
-  args: { key: v.string() },
+  args: { idempotencyKey: v.string() },
   returns: v.union(schema.doc("refunds"), v.null()),
-  handler: (ctx, { key }) =>
+  handler: (ctx, { idempotencyKey }) =>
     ctx.db
       .query("refunds")
-      .withIndex("by_idempotencyKey", (q) => q.eq("idempotencyKey", key))
+      .withIndex("by_idempotencyKey", (q) => q.eq("idempotencyKey", idempotencyKey))
       .first(),
 });
 export const customerByKey = internalQuery({
-  args: { key: v.string() },
+  args: { idempotencyKey: v.string() },
   returns: v.union(schema.doc("customers"), v.null()),
-  handler: (ctx, { key }) =>
+  handler: (ctx, { idempotencyKey }) =>
     ctx.db
       .query("customers")
-      .withIndex("by_idempotencyKey", (q) => q.eq("idempotencyKey", key))
+      .withIndex("by_idempotencyKey", (q) => q.eq("idempotencyKey", idempotencyKey))
       .first(),
 });
 export const customerByUser = internalQuery({
@@ -203,28 +204,28 @@ export const customerByUser = internalQuery({
   handler: (ctx, { userId, testMode }) =>
     ctx.db
       .query("customers")
-      .withIndex("by_testMode_and_userId", (q) => q.eq("testMode", testMode).eq("userId", userId))
+      .withIndex("by_userId_and_testMode", (q) => q.eq("userId", userId).eq("testMode", testMode))
       .first(),
 });
 export const planByKey = internalQuery({
-  args: { key: v.string(), testMode: v.boolean() },
+  args: { idempotencyKey: v.string(), testMode: v.boolean() },
   returns: v.union(schema.doc("plans"), v.null()),
-  handler: (ctx, { key, testMode }) =>
+  handler: (ctx, { idempotencyKey, testMode }) =>
     ctx.db
       .query("plans")
       .withIndex("by_idempotencyKey_and_testMode", (q) =>
-        q.eq("idempotencyKey", key).eq("testMode", testMode),
+        q.eq("idempotencyKey", idempotencyKey).eq("testMode", testMode),
       )
       .first(),
 });
 export const subscriptionByKey = internalQuery({
-  args: { key: v.string(), testMode: v.boolean() },
+  args: { idempotencyKey: v.string(), testMode: v.boolean() },
   returns: v.union(schema.doc("subscriptions"), v.null()),
-  handler: (ctx, { key, testMode }) =>
+  handler: (ctx, { idempotencyKey, testMode }) =>
     ctx.db
       .query("subscriptions")
       .withIndex("by_idempotencyKey_and_testMode", (q) =>
-        q.eq("idempotencyKey", key).eq("testMode", testMode),
+        q.eq("idempotencyKey", idempotencyKey).eq("testMode", testMode),
       )
       .first(),
 });

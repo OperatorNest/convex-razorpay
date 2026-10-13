@@ -1,4 +1,10 @@
+import { parseProviderResponse } from "../shared/providerErrors.js";
+import { paginationOptsValidator } from "convex/server";
+import { boundedPage } from "./pagination.js";
+import { paginator } from "convex-helpers/server/pagination";
+import { paymentFields } from "./mapping.js";
 import { razorpayError } from "../shared/errors.js";
+
 import { v } from "convex/values";
 import { action, query } from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
@@ -13,29 +19,34 @@ import {
   requestProvider,
 } from "./provider.js";
 import { pageArgs, validateAmount, validateCurrency, validatePage } from "./validators.js";
-import { boundedLimit, record } from "../shared/validation.js";
+import { record } from "../shared/validation.js";
 
 export const fetch = action({
-  args: { paymentId: v.string(), testMode: v.optional(v.boolean()) },
-  returns: schema.doc("payments"),
-  handler: async (ctx, { paymentId, testMode }): Promise<Doc<"payments">> => {
+  args: { razorpayPaymentId: v.string(), testMode: v.optional(v.boolean()) },
+  returns: v.object(schema.tables.payments.validator.fields),
+  handler: async (
+    ctx,
+    { razorpayPaymentId, testMode },
+  ): Promise<Omit<Doc<"payments">, "_id" | "_creationTime">> => {
     if (isTestMode(testMode)) {
-      const local = await ctx.runQuery(internal.lookup.payment, { id: paymentId });
+      const local = await ctx.runQuery(internal.lookup.payment, { id: razorpayPaymentId });
       if (!local) throw razorpayError("RAZORPAY_NOT_FOUND");
       assertModeMatches(local, true);
-      return local;
+      const { _id, _creationTime, ...entity } = local;
+      return entity;
     }
-    const raw = await requestProvider("GET", `/payments/${encodeURIComponent(paymentId)}`, {
+    const raw = await requestProvider("GET", `/payments/${encodeURIComponent(razorpayPaymentId)}`, {
       idempotent: true,
     });
-    if (record(raw).id !== paymentId) throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
-    return ctx.runMutation(internal.mutations.putPayment, { raw, observedAt: Date.now() });
+    if (parseProviderResponse(() => record(raw)).id !== razorpayPaymentId)
+      throw razorpayError("RAZORPAY_INVALID_RESPONSE");
+    return { ...paymentFields(raw, Date.now()), testMode: false };
   },
 });
 
 export const capture = action({
   args: {
-    paymentId: v.string(),
+    razorpayPaymentId: v.string(),
     amount: v.number(),
     currency: v.string(),
     testMode: v.optional(v.boolean()),
@@ -45,7 +56,7 @@ export const capture = action({
     validateAmount(args.amount);
     validateCurrency(args.currency);
     if (isTestMode(args.testMode)) {
-      const existing = await ctx.runQuery(internal.lookup.payment, { id: args.paymentId });
+      const existing = await ctx.runQuery(internal.lookup.payment, { id: args.razorpayPaymentId });
       if (!existing) throw razorpayError("RAZORPAY_NOT_FOUND");
       assertModeMatches(existing, true);
       if (
@@ -58,7 +69,7 @@ export const capture = action({
       return ctx.runMutation(internal.mutations.putPayment, {
         raw: {
           ...existing.raw,
-          id: args.paymentId,
+          id: args.razorpayPaymentId,
           amount: args.amount,
           currency: args.currency,
           status: "captured",
@@ -72,43 +83,52 @@ export const capture = action({
     }
     const raw = await requestProvider(
       "POST",
-      `/payments/${encodeURIComponent(args.paymentId)}/capture`,
+      `/payments/${encodeURIComponent(args.razorpayPaymentId)}/capture`,
       {
         body: { amount: args.amount, currency: args.currency },
       },
     );
-    if (record(raw).id !== args.paymentId) throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
+    if (parseProviderResponse(() => record(raw)).id !== args.razorpayPaymentId)
+      throw razorpayError("RAZORPAY_INVALID_RESPONSE");
     return ctx.runMutation(internal.mutations.putPayment, { raw, observedAt: Date.now() });
   },
 });
 
-export const list = action({
+export const fetchAll = action({
   args: pageArgs,
-  returns: v.array(schema.doc("payments")),
-  handler: async (ctx, args): Promise<Doc<"payments">[]> => {
+  returns: v.array(v.object(schema.tables.payments.validator.fields)),
+  handler: async (ctx, args): Promise<Omit<Doc<"payments">, "_id" | "_creationTime">[]> => {
     const { count, skip } = validatePage(args.count, args.skip);
     if (isTestMode(args.testMode))
-      return ctx.runQuery(internal.lookup.paymentsPage, { count, skip, testMode: true });
+      return (
+        await ctx.runQuery(internal.lookup.paymentsPage, { count, skip, testMode: true })
+      ).map(({ _id, _creationTime, ...entity }) => entity);
     const items = collectionItems(
       await requestProvider("GET", listPath("/payments", count, skip), { idempotent: true }),
     );
-    return Promise.all(
-      items.map((raw) =>
-        ctx.runMutation(internal.mutations.putPayment, { raw, observedAt: Date.now() }),
-      ),
-    );
+    return items.map((raw) => Object.assign(paymentFields(raw, Date.now()), { testMode: false }));
   },
 });
 
-export const listForOrder = query({
-  args: { orderId: v.string(), limit: v.optional(v.number()), testMode: v.optional(v.boolean()) },
-  returns: v.array(schema.doc("payments")),
-  handler: (ctx, { orderId, limit, testMode }) =>
-    ctx.db
-      .query("payments")
-      .withIndex("by_orderId_and_testMode", (q) =>
-        q.eq("orderId", orderId).eq("testMode", resolveMode(testMode)),
-      )
-      .order("desc")
-      .take(boundedLimit(limit)),
+export const list = query({
+  args: {
+    razorpayOrderId: v.string(),
+    paginationOpts: paginationOptsValidator,
+    testMode: v.optional(v.boolean()),
+  },
+  returns: v.object({
+    page: v.array(schema.doc("payments")),
+    isDone: v.boolean(),
+    continueCursor: v.string(),
+  }),
+  handler: (ctx, { razorpayOrderId, paginationOpts, testMode }) =>
+    boundedPage(
+      paginator(ctx.db, schema)
+        .query("payments")
+        .withIndex("by_razorpayOrderId_and_testMode", (q) =>
+          q.eq("razorpayOrderId", razorpayOrderId).eq("testMode", resolveMode(testMode)),
+        )
+        .order("desc"),
+      paginationOpts,
+    ),
 });

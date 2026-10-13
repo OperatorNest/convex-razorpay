@@ -1,11 +1,13 @@
 const encoder = new TextEncoder();
 
-export async function sha256Hex(message: string): Promise<string> {
+/** Compute the hexadecimal SHA-256 hash of a message. */
+export async function computeSha256Hex(message: string): Promise<string> {
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(message)));
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-export async function hmacSha256Hex(secret: string, message: string): Promise<string> {
+/** Compute the hexadecimal HMAC-SHA-256 signature of a message. */
+export async function computeHmacSha256Hex(secret: string, message: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
     encoder.encode(secret),
@@ -17,7 +19,8 @@ export async function hmacSha256Hex(secret: string, message: string): Promise<st
   return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-export function constantTimeEqualHex(left: string, right: string): boolean {
+/** Compare two hexadecimal SHA-256 signatures in constant time. */
+export function compareHexSignatures(left: string, right: string): boolean {
   const validLeft = /^[0-9a-f]{64}$/i.test(left);
   const validRight = /^[0-9a-f]{64}$/i.test(right);
   let mismatch = Number(!validLeft || !validRight);
@@ -32,38 +35,38 @@ export async function verifyHmacSha256Hex(
   message: string,
   signature: string,
 ): Promise<boolean> {
-  return constantTimeEqualHex(await hmacSha256Hex(secret, message), signature);
+  return compareHexSignatures(await computeHmacSha256Hex(secret, message), signature);
 }
 
 export async function verifyOrderCheckout(
   secret: string,
-  orderId: string,
-  paymentId: string,
+  razorpayOrderId: string,
+  razorpayPaymentId: string,
   signature: string,
 ): Promise<boolean> {
-  return verifyHmacSha256Hex(secret, `${orderId}|${paymentId}`, signature);
+  return verifyHmacSha256Hex(secret, `${razorpayOrderId}|${razorpayPaymentId}`, signature);
 }
 
 export async function verifySubscriptionCheckout(
   secret: string,
-  subscriptionId: string,
-  paymentId: string,
+  razorpaySubscriptionId: string,
+  razorpayPaymentId: string,
   signature: string,
 ): Promise<boolean> {
-  return verifyHmacSha256Hex(secret, `${paymentId}|${subscriptionId}`, signature);
+  return verifyHmacSha256Hex(secret, `${razorpayPaymentId}|${razorpaySubscriptionId}`, signature);
 }
 
 export async function verifyPaymentLinkCallback(
   secret: string,
-  paymentLinkId: string,
+  razorpayPaymentLinkId: string,
   referenceId: string,
   status: string,
-  paymentId: string,
+  razorpayPaymentId: string,
   signature: string,
 ): Promise<boolean> {
   return verifyHmacSha256Hex(
     secret,
-    `${paymentLinkId}|${referenceId}|${status}|${paymentId}`,
+    `${razorpayPaymentLinkId}|${referenceId}|${status}|${razorpayPaymentId}`,
     signature,
   );
 }

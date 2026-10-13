@@ -1,9 +1,12 @@
-import { isDefinitiveNoCreate, providerErrorCode, razorpayError } from "../shared/errors.js";
-import { v } from "convex/values";
-import { action } from "./_generated/server.js";
-import { internal } from "./_generated/api.js";
+import { parseProviderResponse } from "../shared/providerErrors.js";
+import { planFields } from "./mapping.js";
 import schema from "./schema.js";
 import type { Doc } from "./_generated/dataModel.js";
+import { razorpayError } from "../shared/errors.js";
+import { isDefinitiveNoCreate, providerErrorCode } from "../shared/providerErrors.js";
+import { v } from "convex/values";
+import { action, mutation } from "./_generated/server.js";
+import { internal } from "./_generated/api.js";
 import { collectionItems } from "./mapping.js";
 import {
   assertModeMatches,
@@ -67,7 +70,7 @@ export const create = action({
       ...linkedNotes(args.notes, args.userId, args.externalId, args.metadata),
       ...(args.idempotencyKey ? { [idempotencyNote]: args.idempotencyKey } : {}),
     });
-    const fingerprint = stableStringify({
+    const requestFingerprint = stableStringify({
       testMode,
       period: args.period,
       interval: args.interval,
@@ -78,13 +81,13 @@ export const create = action({
     if (args.idempotencyKey) {
       const claim = await ctx.runMutation(internal.idempotency.claim, {
         resource: "plan",
-        key: args.idempotencyKey,
-        fingerprint,
+        idempotencyKey: args.idempotencyKey,
+        requestFingerprint,
         testMode,
       });
       if (claim === "completed") {
         const existing = await ctx.runQuery(internal.mutations.planByKey, {
-          key: args.idempotencyKey,
+          idempotencyKey: args.idempotencyKey,
           testMode,
         });
         if (!existing) throw razorpayError("RAZORPAY_NOT_FOUND");
@@ -122,8 +125,8 @@ export const create = action({
           if (args.idempotencyKey && isDefinitiveNoCreate(error)) {
             await ctx.runMutation(internal.idempotency.fail, {
               resource: "plan",
-              key: args.idempotencyKey,
-              fingerprint,
+              idempotencyKey: args.idempotencyKey,
+              requestFingerprint,
               testMode,
               errorCode: providerErrorCode(error),
             });
@@ -140,7 +143,7 @@ export const create = action({
         externalId: args.externalId,
         metadata: args.metadata,
         idempotencyKey: args.idempotencyKey,
-        requestFingerprint: fingerprint,
+        requestFingerprint,
         testMode,
       }),
     });
@@ -149,37 +152,51 @@ export const create = action({
 });
 
 export const fetch = action({
-  args: { planId: v.string(), testMode: v.optional(v.boolean()) },
-  returns: schema.doc("plans"),
-  handler: async (ctx, { planId, testMode }): Promise<Doc<"plans">> => {
+  args: { razorpayPlanId: v.string(), testMode: v.optional(v.boolean()) },
+  returns: v.object(schema.tables.plans.validator.fields),
+  handler: async (
+    ctx,
+    { razorpayPlanId, testMode },
+  ): Promise<Omit<Doc<"plans">, "_id" | "_creationTime">> => {
     if (isTestMode(testMode)) {
-      const local = await ctx.runQuery(internal.lookup.plan, { id: planId });
+      const local = await ctx.runQuery(internal.lookup.plan, { id: razorpayPlanId });
       if (!local) throw razorpayError("RAZORPAY_NOT_FOUND");
       assertModeMatches(local, true);
-      return local;
+      const { _id, _creationTime, ...entity } = local;
+      return entity;
     }
-    const raw = await requestProvider("GET", `/plans/${encodeURIComponent(planId)}`, {
+    const raw = await requestProvider("GET", `/plans/${encodeURIComponent(razorpayPlanId)}`, {
       idempotent: true,
     });
-    if (record(raw).id !== planId) throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
-    return ctx.runMutation(internal.mutations.putPlan, { raw, observedAt: Date.now() });
+    if (parseProviderResponse(() => record(raw)).id !== razorpayPlanId)
+      throw razorpayError("RAZORPAY_INVALID_RESPONSE");
+    return { ...planFields(raw, Date.now()), testMode: false };
   },
 });
 
-export const list = action({
+export const fetchAll = action({
   args: pageArgs,
-  returns: v.array(schema.doc("plans")),
-  handler: async (ctx, args): Promise<Doc<"plans">[]> => {
+  returns: v.array(v.object(schema.tables.plans.validator.fields)),
+  handler: async (ctx, args): Promise<Omit<Doc<"plans">, "_id" | "_creationTime">[]> => {
     const { count, skip } = validatePage(args.count, args.skip);
     if (isTestMode(args.testMode))
-      return ctx.runQuery(internal.lookup.plansPage, { count, skip, testMode: true });
+      return (await ctx.runQuery(internal.lookup.plansPage, { count, skip, testMode: true })).map(
+        ({ _id, _creationTime, ...entity }) => entity,
+      );
     const items = collectionItems(
       await requestProvider("GET", listPath("/plans", count, skip), { idempotent: true }),
     );
-    return Promise.all(
-      items.map((raw) =>
-        ctx.runMutation(internal.mutations.putPlan, { raw, observedAt: Date.now() }),
-      ),
-    );
+    return items.map((raw) => Object.assign(planFields(raw, Date.now()), { testMode: false }));
   },
+});
+
+export const releaseIdempotency = mutation({
+  args: { idempotencyKey: v.string(), testMode: v.optional(v.boolean()) },
+  returns: v.boolean(),
+  handler: (ctx, args): Promise<boolean> =>
+    ctx.runMutation(internal.idempotency.release, {
+      resource: "plan",
+      idempotencyKey: args.idempotencyKey,
+      testMode: args.testMode,
+    }),
 });

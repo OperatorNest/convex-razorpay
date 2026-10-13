@@ -260,9 +260,10 @@ function recorder(secret, token, deliveries) {
         event: safeEvent,
         fixturePath,
         fixture,
-        paymentId: parsed?.payload?.payment?.entity?.id,
-        orderId: parsed?.payload?.order?.entity?.id ?? parsed?.payload?.payment?.entity?.order_id,
-        refundId: parsed?.payload?.refund?.entity?.id,
+        razorpayPaymentId: parsed?.payload?.payment?.entity?.id,
+        razorpayOrderId:
+          parsed?.payload?.order?.entity?.id ?? parsed?.payload?.payment?.entity?.order_id,
+        razorpayRefundId: parsed?.payload?.refund?.entity?.id,
       });
       response.writeHead(204).end();
     } catch {
@@ -271,7 +272,7 @@ function recorder(secret, token, deliveries) {
   });
 }
 
-function checkoutServer(onCheckout, orderId, token) {
+function checkoutServer(onCheckout, razorpayOrderId, token) {
   return createServer(async (request, response) => {
     if (request.method === "OPTIONS") {
       response
@@ -288,7 +289,7 @@ function checkoutServer(onCheckout, orderId, token) {
         const body = await boundedBody(request, 10_000);
         const data = JSON.parse(body.toString("utf8"));
         if (
-          data.razorpay_order_id !== orderId ||
+          data.razorpay_order_id !== razorpayOrderId ||
           typeof data.razorpay_payment_id !== "string" ||
           !/^pay_[A-Za-z0-9]+$/.test(data.razorpay_payment_id) ||
           typeof data.razorpay_signature !== "string" ||
@@ -399,7 +400,7 @@ function writeObservedDocs(deliveries, subscription, refund) {
     "- A Checkout.js test payment reached captured state without an explicit capture API call during this run. This observes this account's capture setting, not the general capture window.",
     `- The refund create call returned status \`${String(refund.status).replace(/[^a-z_]/g, "")}\`; a \`refund.processed\` webhook was received and applied.`,
     subscription
-      ? `- Cancellation with \`cancelAtCycleEnd: true\` returned status \`${String(subscription.status).replace(/[^a-z_]/g, "")}\`. The built component sends numeric \`1\` for this option (source inspection), so this run shows that the API accepted the numeric form. Boolean acceptance and eventual cancellation timing were not observed.`
+      ? `- Cancellation with \`subscriptions.cancelAtCycleEnd\` returned status \`${String(subscription.status).replace(/[^a-z_]/g, "")}\`. The built component sends numeric \`1\` for this operation (source inspection), so this run shows that the API accepted the numeric form. Eventual cancellation timing was not observed.`
       : "- Cycle-end cancellation was attempted but not accepted in this run. Numeric and Boolean provider acceptance and eventual behavior remain unqualified.",
     "- Each recorded delivery passed local HMAC verification, component receipt and callback assertions. Event-id checks used a locally re-signed whitespace variant of the observed JSON body, and body-hash checks used an identical body with an alternate event ID. These replays were generated locally and were not provider deliveries.",
     "",
@@ -623,34 +624,44 @@ async function main() {
     const setup = cli("e2e:setup", { runId });
     pass(
       "customers.getOrCreate",
-      typeof setup.customerId === "string" && setup.customerId.startsWith("cust_"),
+      typeof setup.razorpayCustomerId === "string" && setup.razorpayCustomerId.startsWith("cust_"),
     );
-    pass("orders.create", typeof setup.orderId === "string" && setup.orderId.startsWith("order_"));
-    pass("plans.create", typeof setup.planId === "string" && setup.planId.startsWith("plan_"));
+    pass(
+      "orders.create",
+      typeof setup.razorpayOrderId === "string" && setup.razorpayOrderId.startsWith("order_"),
+    );
+    pass(
+      "plans.create",
+      typeof setup.razorpayPlanId === "string" && setup.razorpayPlanId.startsWith("plan_"),
+    );
     pass(
       "subscriptions.create",
-      typeof setup.subscriptionId === "string" && setup.subscriptionId.startsWith("sub_"),
+      typeof setup.razorpaySubscriptionId === "string" &&
+        setup.razorpaySubscriptionId.startsWith("sub_"),
     );
     const fetched = cli("e2e:fetches", {
-      orderId: setup.orderId,
-      planId: setup.planId,
-      subscriptionId: setup.subscriptionId,
+      razorpayOrderId: setup.razorpayOrderId,
+      razorpayPlanId: setup.razorpayPlanId,
+      razorpaySubscriptionId: setup.razorpaySubscriptionId,
     });
-    pass("orders.fetch", fetched.orderId === setup.orderId);
-    pass("plans.fetch", fetched.planId === setup.planId);
-    pass("subscriptions.fetch", fetched.subscriptionId === setup.subscriptionId);
+    pass("orders.fetch", fetched.razorpayOrderId === setup.razorpayOrderId);
+    pass("plans.fetch", fetched.razorpayPlanId === setup.razorpayPlanId);
+    pass("subscriptions.fetch", fetched.razorpaySubscriptionId === setup.razorpaySubscriptionId);
     let cancelled;
     try {
-      cancelled = cli("e2e:cancelSubscription", { subscriptionId: setup.subscriptionId });
+      cancelled = cli("e2e:cancelSubscription", {
+        razorpaySubscriptionId: setup.razorpaySubscriptionId,
+      });
       pass(
         "subscriptions.cancel at cycle end API response",
-        cancelled.subscriptionId === setup.subscriptionId && typeof cancelled.status === "string",
+        cancelled.razorpaySubscriptionId === setup.razorpaySubscriptionId &&
+          typeof cancelled.status === "string",
       );
     } catch {
       cancelFailure = true;
       console.log("FAIL  subscriptions.cancel at cycle end (continuing payment flow)");
     }
-    const before = cli("e2e:paymentsForOrder", { orderId: setup.orderId });
+    const before = cli("e2e:paymentsForOrder", { razorpayOrderId: setup.razorpayOrderId });
     pass("orders.fetchPayments", Array.isArray(before));
 
     let checkoutReply;
@@ -659,13 +670,13 @@ async function main() {
       (reply) => {
         checkoutReply = reply;
       },
-      setup.orderId,
+      setup.razorpayOrderId,
       checkoutToken,
     );
     const checkoutPort = await listen(paymentServer);
     tempDir = mkdtempSync(join(tmpdir(), "razorpay-e2e-"));
     const page = join(tempDir, "checkout.html");
-    writeFileSync(page, checkoutHtml(setup.checkoutOptions, checkoutPort, checkoutToken), {
+    writeFileSync(page, checkoutHtml(setup.buildCheckoutOptions, checkoutPort, checkoutToken), {
       mode: 0o600,
     });
     console.log("Opening local Checkout.js page. Razorpay's documented test inputs:");
@@ -682,14 +693,14 @@ async function main() {
       deadline,
       controller.signal,
     );
-    pass("Checkout.js returned expected order", reply.razorpay_order_id === setup.orderId);
+    pass("Checkout.js returned expected order", reply.razorpay_order_id === setup.razorpayOrderId);
     await until(
       "payment webhook mirror",
       () => {
-        const state = cli("e2e:state", { orderId: setup.orderId, eventIds: [] });
+        const state = cli("e2e:state", { razorpayOrderId: setup.razorpayOrderId, eventIds: [] });
         return state.payments.find(
           (payment) =>
-            payment.paymentId === reply.razorpay_payment_id &&
+            payment.razorpayPaymentId === reply.razorpay_payment_id &&
             (payment.status === "authorized" || payment.status === "captured"),
         );
       },
@@ -697,8 +708,8 @@ async function main() {
       controller.signal,
     );
     const verify = cli("e2e:verifyCheckout", {
-      orderId: setup.orderId,
-      paymentId: reply.razorpay_payment_id,
+      razorpayOrderId: setup.razorpayOrderId,
+      razorpayPaymentId: reply.razorpay_payment_id,
       signature: reply.razorpay_signature,
     });
     pass(
@@ -711,8 +722,8 @@ async function main() {
         deliveries.find(
           (d) =>
             d.event === "payment.captured" &&
-            d.paymentId === reply.razorpay_payment_id &&
-            d.orderId === setup.orderId,
+            d.razorpayPaymentId === reply.razorpay_payment_id &&
+            d.razorpayOrderId === setup.razorpayOrderId,
         ),
       deadline,
       controller.signal,
@@ -720,34 +731,39 @@ async function main() {
     const captured = await until(
       "captured payment mirror",
       () => {
-        const state = cli("e2e:state", { orderId: setup.orderId, eventIds: [] });
+        const state = cli("e2e:state", { razorpayOrderId: setup.razorpayOrderId, eventIds: [] });
         return state.payments.find(
           (payment) =>
-            payment.paymentId === reply.razorpay_payment_id && payment.status === "captured",
+            payment.razorpayPaymentId === reply.razorpay_payment_id &&
+            payment.status === "captured",
         );
       },
       deadline,
       controller.signal,
     );
     pass("payment mirror captured", Boolean(captured));
-    const refund = cli("e2e:refund", { paymentId: reply.razorpay_payment_id, runId });
+    const refund = cli("e2e:refund", { razorpayPaymentId: reply.razorpay_payment_id, runId });
     pass(
       "refund created with idempotency key",
-      typeof refund.refundId === "string" && refund.refundId.startsWith("rfnd_"),
+      typeof refund.razorpayRefundId === "string" && refund.razorpayRefundId.startsWith("rfnd_"),
     );
     await until(
       "refund.processed webhook",
       () =>
-        deliveries.find((d) => d.event === "refund.processed" && d.refundId === refund.refundId),
+        deliveries.find(
+          (d) => d.event === "refund.processed" && d.razorpayRefundId === refund.razorpayRefundId,
+        ),
       deadline,
       controller.signal,
     );
     const refunded = await until(
       "processed refund mirror",
       () => {
-        const mirror = componentRows("refunds").find((row) => row.razorpayId === refund.refundId);
+        const mirror = componentRows("refunds").find(
+          (row) => row.razorpayRefundId === refund.razorpayRefundId,
+        );
         return mirror?.status === "processed" &&
-          mirror.paymentId === reply.razorpay_payment_id &&
+          mirror.razorpayPaymentId === reply.razorpay_payment_id &&
           mirror.amount === refund.amount &&
           mirror.testMode === false
           ? mirror
@@ -763,7 +779,7 @@ async function main() {
         deliveries.find(
           (delivery) =>
             delivery.event === "payment.authorized" &&
-            delivery.paymentId === reply.razorpay_payment_id,
+            delivery.razorpayPaymentId === reply.razorpay_payment_id,
         ),
       deadline,
       controller.signal,
@@ -771,26 +787,30 @@ async function main() {
     pass(
       "payment.authorized webhook",
       deliveries.some(
-        (d) => d.event === "payment.authorized" && d.paymentId === reply.razorpay_payment_id,
+        (d) =>
+          d.event === "payment.authorized" && d.razorpayPaymentId === reply.razorpay_payment_id,
       ),
     );
     await until(
       "order.paid webhook",
       () =>
         deliveries.find(
-          (delivery) => delivery.event === "order.paid" && delivery.orderId === setup.orderId,
+          (delivery) =>
+            delivery.event === "order.paid" && delivery.razorpayOrderId === setup.razorpayOrderId,
         ),
       deadline,
       controller.signal,
     );
     pass(
       "order.paid webhook",
-      deliveries.some((d) => d.event === "order.paid" && d.orderId === setup.orderId),
+      deliveries.some(
+        (d) => d.event === "order.paid" && d.razorpayOrderId === setup.razorpayOrderId,
+      ),
     );
     const paidOrder = await until(
       "paid order mirror",
       () => {
-        const state = cli("e2e:state", { orderId: setup.orderId, eventIds: [] });
+        const state = cli("e2e:state", { razorpayOrderId: setup.razorpayOrderId, eventIds: [] });
         return state.order?.status === "paid" &&
           state.order.amountPaid === state.order.amount &&
           state.order.amountDue === 0

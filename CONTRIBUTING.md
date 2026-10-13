@@ -25,6 +25,16 @@ Run affected tests before `pnpm check` (format, build, type-aware lint, typechec
   (`feat:`, `fix:`, `docs:`, `test:`, `chore:`); a breaking change adds `!` after the type.
 - Until 1.0.0, a breaking change ships without compatibility code, deprecation periods or data
   migrations; its changeset is a `minor` bump that states what breaks.
+- Add a changeset for every consumer-visible change to `@operatornest/convex-razorpay`.
+- Public component functions have `args` and `returns` validators; reads are bounded and indexed.
+- Errors on caller-reachable paths come from `razorpayError` in `src/shared/errors.ts`; add each
+  `RAZORPAY_` code, its fixed message and its README Errors row together.
+- No Node built-ins, `Buffer` or `process` in `src/`. Read provider credentials and master keys
+  only through generated component env; never put them in arguments, rows, logs or errors.
+- Tests use generated credentials or fixed test-only vectors and stub external requests.
+- Regenerate committed bindings from their inputs with `pnpm build:codegen`.
+- Update affected examples, README claims and ADR contracts. Run the checks in AGENTS.md and
+  report commands and exit codes.
 
 ## Maintainer provider verification
 
@@ -36,4 +46,4 @@ The runner builds under the shared lock, starts the anonymous backend and prints
 
 Bug reports need package, Convex and Node versions, deployment type, operation, a minimal reproduction, expected result and actual result. Remove credentials, payment details and personal data. Use [private vulnerability reporting](https://github.com/OperatorNest/convex-razorpay/security/advisories/new) for security defects. Follow the [Code of Conduct](https://github.com/OperatorNest/.github/blob/main/CODE_OF_CONDUCT.md) and [support guidance](https://github.com/OperatorNest/.github/blob/main/SUPPORT.md).
 
-Add one changeset for consumer-visible changes. A maintainer versions on a branch and reviews the changelog through a PR. Before release, run `pnpm check`, `pnpm smoke`, `pnpm audit --prod --audit-level high` and `pnpm pack --dry-run`. The release workflow publishes with npm trusted publishing after CI and smoke pass on the same commit. Publishing, pushing, deploying and registry submissions require explicit authorization.
+Add one changeset for consumer-visible changes. A maintainer versions on a branch and checks the changelog through a PR. Before release, run `pnpm check`, `pnpm smoke`, `pnpm audit --prod --audit-level high` and `pnpm pack --dry-run`. The release workflow publishes with npm trusted publishing after CI and smoke pass on the same commit. Publishing, pushing, deploying and registry submissions require explicit authorization.

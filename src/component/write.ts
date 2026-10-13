@@ -1,4 +1,5 @@
-import { getOrThrow, razorpayError } from "../shared/errors.js";
+import { razorpayError } from "../shared/errors.js";
+import { getOrThrow } from "../shared/providerErrors.js";
 import type { MutationCtx } from "./_generated/server.js";
 import type { Doc } from "./_generated/dataModel.js";
 import { assertModeMatches } from "./provider.js";
@@ -23,8 +24,8 @@ export interface Linkage {
   idempotencyKey?: string | undefined;
   requestFingerprint?: string | undefined;
   createdThroughComponent?: boolean | undefined;
-  subscriptionId?: string | undefined;
-  invoiceId?: string | undefined;
+  razorpaySubscriptionId?: string | undefined;
+  razorpayInvoiceId?: string | undefined;
 }
 
 function mirrorFields(link: Linkage) {
@@ -58,22 +59,22 @@ async function completeClaim(
   ctx: MutationCtx,
   resource: "order" | "plan" | "subscription",
   link: ModeLinkage,
-  razorpayId: string,
+  razorpayEntityId: string,
 ): Promise<void> {
-  const key = link.idempotencyKey;
-  if (!key || !link.requestFingerprint) return;
+  const idempotencyKey = link.idempotencyKey;
+  if (!idempotencyKey || !link.requestFingerprint) return;
   const claim = await ctx.db
     .query("idempotencyRequests")
-    .withIndex("by_resource_and_testMode_and_key", (q) =>
-      q.eq("resource", resource).eq("testMode", link.testMode).eq("key", key),
+    .withIndex("by_resource_and_testMode_and_idempotencyKey", (q) =>
+      q.eq("resource", resource).eq("testMode", link.testMode).eq("idempotencyKey", idempotencyKey),
     )
     .unique();
-  if (!claim) throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
-  if (claim.fingerprint !== link.requestFingerprint)
+  if (!claim) throw razorpayError("RAZORPAY_INVALID_RESPONSE");
+  if (claim.requestFingerprint !== link.requestFingerprint)
     throw razorpayError("RAZORPAY_IDEMPOTENCY_CONFLICT");
   await ctx.db.patch("idempotencyRequests", claim["_id"], {
     status: "completed",
-    razorpayId,
+    razorpayEntityId,
     settledAt: Date.now(),
   });
 }
@@ -87,12 +88,12 @@ export async function applyOrder(
   const next = orderFields(raw, observedAt);
   const current = await ctx.db
     .query("orders")
-    .withIndex("by_razorpayId", (q) => q.eq("razorpayId", next.razorpayId))
+    .withIndex("by_razorpayOrderId", (q) => q.eq("razorpayOrderId", next.razorpayOrderId))
     .unique();
   if (current) {
     assertModeMatches(current, link.testMode);
     if (current.amount !== next.amount || current.currency !== next.currency)
-      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
+      throw razorpayError("RAZORPAY_INVALID_RESPONSE");
     const advances = statusAdvances(
       "order",
       current.status,
@@ -119,7 +120,7 @@ export async function applyOrder(
         createdThroughComponent: current.createdThroughComponent ?? link.createdThroughComponent,
       }),
     });
-    await completeClaim(ctx, "order", link, next.razorpayId);
+    await completeClaim(ctx, "order", link, next.razorpayOrderId);
     return getOrThrow(await ctx.db.get("orders", current["_id"]));
   }
   if (link.testMode && link.createdThroughComponent && next.receipt) {
@@ -129,14 +130,14 @@ export async function applyOrder(
         q.eq("testMode", true).eq("receipt", next.receipt),
       )
       .first();
-    if (duplicate) throw razorpayError("RAZORPAY_PROVIDER_REJECTED", { providerStatus: 400 });
+    if (duplicate) throw razorpayError("RAZORPAY_PROVIDER_ERROR", { providerStatus: 400 });
   }
   const id = await ctx.db.insert("orders", {
     ...next,
     ...orderLinkFields(link),
     testMode: link.testMode,
   });
-  await completeClaim(ctx, "order", link, next.razorpayId);
+  await completeClaim(ctx, "order", link, next.razorpayOrderId);
   return getOrThrow(await ctx.db.get("orders", id));
 }
 
@@ -144,26 +145,26 @@ export async function applyPayment(
   ctx: MutationCtx,
   raw: unknown,
   observedAt: number,
-  link: Pick<Linkage, "subscriptionId" | "invoiceId"> & { testMode: boolean },
+  link: Pick<Linkage, "razorpaySubscriptionId" | "razorpayInvoiceId"> & { testMode: boolean },
 ): Promise<Doc<"payments">> {
   const fields = paymentFields(raw, observedAt);
-  const subscriptionId = link.subscriptionId ?? fields.subscriptionId;
-  const invoiceId = link.invoiceId ?? fields.invoiceId;
+  const razorpaySubscriptionId = link.razorpaySubscriptionId ?? fields.razorpaySubscriptionId;
+  const razorpayInvoiceId = link.razorpayInvoiceId ?? fields.razorpayInvoiceId;
   const next = {
     ...fields,
-    ...(subscriptionId === undefined ? {} : { subscriptionId }),
-    ...(invoiceId === undefined ? {} : { invoiceId }),
+    ...(razorpaySubscriptionId === undefined ? {} : { razorpaySubscriptionId }),
+    ...(razorpayInvoiceId === undefined ? {} : { razorpayInvoiceId }),
   };
   const current = await ctx.db
     .query("payments")
-    .withIndex("by_razorpayId", (q) => q.eq("razorpayId", next.razorpayId))
+    .withIndex("by_razorpayPaymentId", (q) => q.eq("razorpayPaymentId", next.razorpayPaymentId))
     .unique();
-  const orderId = next.orderId ?? current?.orderId;
-  const order = orderId
+  const razorpayOrderId = next.razorpayOrderId ?? current?.razorpayOrderId;
+  const order = razorpayOrderId
     ? await ctx.db
         .query("orders")
-        .withIndex("by_testMode_and_razorpayId", (q) =>
-          q.eq("testMode", link.testMode).eq("razorpayId", orderId),
+        .withIndex("by_testMode_and_razorpayOrderId", (q) =>
+          q.eq("testMode", link.testMode).eq("razorpayOrderId", razorpayOrderId),
         )
         .unique()
     : null;
@@ -174,17 +175,25 @@ export async function applyPayment(
   if (current) {
     assertModeMatches(current, link.testMode);
     if (current.amount !== next.amount || current.currency !== next.currency)
-      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
-    if (current.orderId && next.orderId && current.orderId !== next.orderId)
-      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
+      throw razorpayError("RAZORPAY_INVALID_RESPONSE");
     if (
-      current.subscriptionId &&
-      next.subscriptionId &&
-      current.subscriptionId !== next.subscriptionId
+      current.razorpayOrderId &&
+      next.razorpayOrderId &&
+      current.razorpayOrderId !== next.razorpayOrderId
     )
-      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
-    if (current.invoiceId && next.invoiceId && current.invoiceId !== next.invoiceId)
-      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
+      throw razorpayError("RAZORPAY_INVALID_RESPONSE");
+    if (
+      current.razorpaySubscriptionId &&
+      next.razorpaySubscriptionId &&
+      current.razorpaySubscriptionId !== next.razorpaySubscriptionId
+    )
+      throw razorpayError("RAZORPAY_INVALID_RESPONSE");
+    if (
+      current.razorpayInvoiceId &&
+      next.razorpayInvoiceId &&
+      current.razorpayInvoiceId !== next.razorpayInvoiceId
+    )
+      throw razorpayError("RAZORPAY_INVALID_RESPONSE");
     if (
       statusAdvances(
         "payment",
@@ -199,15 +208,17 @@ export async function applyPayment(
         ...next,
         ...ownership,
         verified: current.verified,
-        ...((next.orderId ?? current.orderId) === undefined
+        ...((next.razorpayOrderId ?? current.razorpayOrderId) === undefined
           ? {}
-          : { orderId: next.orderId ?? current.orderId }),
-        ...((next.subscriptionId ?? current.subscriptionId) === undefined
+          : { razorpayOrderId: next.razorpayOrderId ?? current.razorpayOrderId }),
+        ...((next.razorpaySubscriptionId ?? current.razorpaySubscriptionId) === undefined
           ? {}
-          : { subscriptionId: next.subscriptionId ?? current.subscriptionId }),
-        ...((next.invoiceId ?? current.invoiceId) === undefined
+          : {
+              razorpaySubscriptionId: next.razorpaySubscriptionId ?? current.razorpaySubscriptionId,
+            }),
+        ...((next.razorpayInvoiceId ?? current.razorpayInvoiceId) === undefined
           ? {}
-          : { invoiceId: next.invoiceId ?? current.invoiceId }),
+          : { razorpayInvoiceId: next.razorpayInvoiceId ?? current.razorpayInvoiceId }),
         captured: current.captured || next.captured,
         amountRefunded,
         ...((amountRefunded > next.amountRefunded ? current.refundStatus : next.refundStatus) ===
@@ -222,12 +233,14 @@ export async function applyPayment(
       await ctx.db.patch("payments", current["_id"], {
         ...ownership,
         ...(next.rawStatus === undefined ? {} : { rawStatus: next.rawStatus }),
-        ...((next.subscriptionId ?? current.subscriptionId) === undefined
+        ...((next.razorpaySubscriptionId ?? current.razorpaySubscriptionId) === undefined
           ? {}
-          : { subscriptionId: next.subscriptionId ?? current.subscriptionId }),
-        ...((next.invoiceId ?? current.invoiceId) === undefined
+          : {
+              razorpaySubscriptionId: next.razorpaySubscriptionId ?? current.razorpaySubscriptionId,
+            }),
+        ...((next.razorpayInvoiceId ?? current.razorpayInvoiceId) === undefined
           ? {}
-          : { invoiceId: next.invoiceId ?? current.invoiceId }),
+          : { razorpayInvoiceId: next.razorpayInvoiceId ?? current.razorpayInvoiceId }),
       });
     }
     return getOrThrow(await ctx.db.get("payments", current["_id"]));
@@ -249,7 +262,7 @@ export async function applyRefund(
   const next = refundFields(raw, observedAt);
   const payment = await ctx.db
     .query("payments")
-    .withIndex("by_razorpayId", (q) => q.eq("razorpayId", next.paymentId))
+    .withIndex("by_razorpayPaymentId", (q) => q.eq("razorpayPaymentId", next.razorpayPaymentId))
     .unique();
   const linked = {
     ...link,
@@ -259,12 +272,12 @@ export async function applyRefund(
   };
   const current = await ctx.db
     .query("refunds")
-    .withIndex("by_razorpayId", (q) => q.eq("razorpayId", next.razorpayId))
+    .withIndex("by_razorpayRefundId", (q) => q.eq("razorpayRefundId", next.razorpayRefundId))
     .unique();
   if (current) {
     assertModeMatches(current, link.testMode);
-    if (current.amount !== next.amount || current.paymentId !== next.paymentId)
-      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
+    if (current.amount !== next.amount || current.razorpayPaymentId !== next.razorpayPaymentId)
+      throw razorpayError("RAZORPAY_INVALID_RESPONSE");
     const advances =
       (current.status !== "processed" || next.status === "processed") &&
       statusAdvances("refund", current.status, next.status);
@@ -297,7 +310,7 @@ export async function applyCustomer(
   const next = customerFields(raw, observedAt);
   const current = await ctx.db
     .query("customers")
-    .withIndex("by_razorpayId", (q) => q.eq("razorpayId", next.razorpayId))
+    .withIndex("by_razorpayCustomerId", (q) => q.eq("razorpayCustomerId", next.razorpayCustomerId))
     .unique();
   if (current) {
     assertModeMatches(current, link.testMode);
@@ -305,7 +318,7 @@ export async function applyCustomer(
       throw razorpayError("RAZORPAY_CUSTOMER_CONFLICT");
     }
     await ctx.db.patch("customers", current["_id"], {
-      ...(next.updatedAtProvider >= current.updatedAtProvider ? next : {}),
+      ...(next.providerUpdatedAt >= current.providerUpdatedAt ? next : {}),
       ...mirrorFields({
         userId: current.userId ?? link.userId,
         externalId: current.externalId ?? link.externalId,
@@ -338,12 +351,12 @@ export async function applyPlan(
   const next = planFields(raw, observedAt);
   const current = await ctx.db
     .query("plans")
-    .withIndex("by_razorpayId", (q) => q.eq("razorpayId", next.razorpayId))
+    .withIndex("by_razorpayPlanId", (q) => q.eq("razorpayPlanId", next.razorpayPlanId))
     .unique();
   if (current) {
     assertModeMatches(current, link.testMode);
     if (current.amount !== next.amount || current.currency !== next.currency)
-      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
+      throw razorpayError("RAZORPAY_INVALID_RESPONSE");
     await ctx.db.patch("plans", current["_id"], {
       ...mirrorFields({
         userId: current.userId ?? link.userId,
@@ -352,7 +365,7 @@ export async function applyPlan(
         idempotencyKey: current.idempotencyKey ?? link.idempotencyKey,
       }),
     });
-    await completeClaim(ctx, "plan", link, next.razorpayId);
+    await completeClaim(ctx, "plan", link, next.razorpayPlanId);
     return getOrThrow(await ctx.db.get("plans", current["_id"]));
   }
   const id = await ctx.db.insert("plans", {
@@ -360,7 +373,7 @@ export async function applyPlan(
     ...mirrorFields(link),
     testMode: link.testMode,
   });
-  await completeClaim(ctx, "plan", link, next.razorpayId);
+  await completeClaim(ctx, "plan", link, next.razorpayPlanId);
   return getOrThrow(await ctx.db.get("plans", id));
 }
 
@@ -368,20 +381,21 @@ export async function applySubscription(
   ctx: MutationCtx,
   raw: unknown,
   observedAt: number,
-  link: ModeLinkage & { webhookCreatedAtProvider?: number },
+  link: ModeLinkage & { webhookAt?: number },
 ): Promise<Doc<"subscriptions">> {
   const next = subscriptionFields(raw, observedAt);
   const current = await ctx.db
     .query("subscriptions")
-    .withIndex("by_razorpayId", (q) => q.eq("razorpayId", next.razorpayId))
+    .withIndex("by_razorpaySubscriptionId", (q) =>
+      q.eq("razorpaySubscriptionId", next.razorpaySubscriptionId),
+    )
     .unique();
   if (current) {
     assertModeMatches(current, link.testMode);
-    const webhookTime = link.webhookCreatedAtProvider;
+    const webhookTime = link.webhookAt;
     const isCurrentWebhook =
       webhookTime !== undefined &&
-      (current.lastWebhookCreatedAtProvider === undefined ||
-        webhookTime >= current.lastWebhookCreatedAtProvider);
+      (current.lastWebhookAt === undefined || webhookTime >= current.lastWebhookAt);
     const advances =
       webhookTime === undefined ||
       (isCurrentWebhook &&
@@ -393,7 +407,7 @@ export async function applySubscription(
           [next.paidCount],
         ));
     await ctx.db.patch("subscriptions", current["_id"], {
-      ...(isCurrentWebhook ? { lastWebhookCreatedAtProvider: webhookTime } : {}),
+      ...(isCurrentWebhook ? { lastWebhookAt: webhookTime } : {}),
       ...(advances
         ? {
             ...next,
@@ -422,18 +436,16 @@ export async function applySubscription(
         ? { createdThroughComponent: true }
         : {}),
     });
-    await completeClaim(ctx, "subscription", link, next.razorpayId);
+    await completeClaim(ctx, "subscription", link, next.razorpaySubscriptionId);
     return getOrThrow(await ctx.db.get("subscriptions", current["_id"]));
   }
   const id = await ctx.db.insert("subscriptions", {
     ...next,
-    ...(link.webhookCreatedAtProvider === undefined
-      ? {}
-      : { lastWebhookCreatedAtProvider: link.webhookCreatedAtProvider }),
+    ...(link.webhookAt === undefined ? {} : { lastWebhookAt: link.webhookAt }),
     ...mirrorFields(link),
     ...(link.createdThroughComponent === true ? { createdThroughComponent: true } : {}),
     testMode: link.testMode,
   });
-  await completeClaim(ctx, "subscription", link, next.razorpayId);
+  await completeClaim(ctx, "subscription", link, next.razorpaySubscriptionId);
   return getOrThrow(await ctx.db.get("subscriptions", id));
 }

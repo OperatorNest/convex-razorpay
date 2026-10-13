@@ -1,3 +1,10 @@
+import {
+  orderStatusValidator,
+  paymentStatusValidator,
+  refundStatusValidator,
+  subscriptionStatusValidator,
+  paymentRefundStatusValidator,
+} from "../shared/statuses.js";
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
@@ -10,47 +17,47 @@ const linkage = {
 
 export default defineSchema({
   orders: defineTable({
-    razorpayId: v.string(),
+    razorpayOrderId: v.string(),
     amount: v.number(),
     partialPayment: v.boolean(),
     amountPaid: v.number(),
     amountDue: v.number(),
     currency: v.string(),
     receipt: v.optional(v.string()),
-    status: v.string(),
+    status: orderStatusValidator,
     rawStatus: v.optional(v.string()),
     attempts: v.number(),
     notes,
     createdAt: v.number(),
-    updatedAtProvider: v.number(),
+    providerUpdatedAt: v.number(),
     idempotencyKey: v.optional(v.string()),
     ...linkage,
     raw: v.any(),
     testMode: v.boolean(),
     createdThroughComponent: v.optional(v.boolean()),
   })
-    .index("by_razorpayId", ["razorpayId"])
-    .index("by_testMode_and_razorpayId", ["testMode", "razorpayId"])
+    .index("by_razorpayOrderId", ["razorpayOrderId"])
+    .index("by_testMode_and_razorpayOrderId", ["testMode", "razorpayOrderId"])
     .index("by_testMode_and_receipt", ["testMode", "receipt"])
     .index("by_idempotencyKey_and_testMode", ["idempotencyKey", "testMode"]),
   payments: defineTable({
-    razorpayId: v.string(),
-    orderId: v.optional(v.string()),
-    subscriptionId: v.optional(v.string()),
-    invoiceId: v.optional(v.string()),
+    razorpayPaymentId: v.string(),
+    razorpayOrderId: v.optional(v.string()),
+    razorpaySubscriptionId: v.optional(v.string()),
+    razorpayInvoiceId: v.optional(v.string()),
     amount: v.number(),
     currency: v.string(),
-    status: v.string(),
+    status: paymentStatusValidator,
     rawStatus: v.optional(v.string()),
     method: v.optional(v.string()),
     captured: v.boolean(),
     verified: v.boolean(),
     amountRefunded: v.number(),
-    refundStatus: v.optional(v.string()),
+    refundStatus: v.optional(paymentRefundStatusValidator),
     international: v.optional(v.boolean()),
     email: v.optional(v.string()),
     contact: v.optional(v.string()),
-    customerId: v.optional(v.string()),
+    razorpayCustomerId: v.optional(v.string()),
     fee: v.optional(v.number()),
     tax: v.optional(v.number()),
     errorCode: v.optional(v.string()),
@@ -62,19 +69,19 @@ export default defineSchema({
     externalId: v.optional(v.string()),
     notes,
     createdAt: v.number(),
-    updatedAtProvider: v.number(),
+    providerUpdatedAt: v.number(),
     raw: v.any(),
     testMode: v.boolean(),
   })
-    .index("by_razorpayId", ["razorpayId"])
-    .index("by_orderId_and_testMode", ["orderId", "testMode"])
+    .index("by_razorpayPaymentId", ["razorpayPaymentId"])
+    .index("by_razorpayOrderId_and_testMode", ["razorpayOrderId", "testMode"])
     .index("by_testMode", ["testMode"]),
   refunds: defineTable({
-    razorpayId: v.string(),
-    paymentId: v.string(),
+    razorpayRefundId: v.string(),
+    razorpayPaymentId: v.string(),
     amount: v.number(),
     currency: v.string(),
-    status: v.string(),
+    status: refundStatusValidator,
     rawStatus: v.optional(v.string()),
     speedRequested: v.optional(v.string()),
     speedProcessed: v.optional(v.string()),
@@ -83,17 +90,17 @@ export default defineSchema({
     idempotencyKey: v.optional(v.string()),
     requestFingerprint: v.optional(v.string()),
     createdAt: v.number(),
-    updatedAtProvider: v.number(),
+    providerUpdatedAt: v.number(),
     userId: v.optional(v.string()),
     externalId: v.optional(v.string()),
     metadata: v.optional(notes),
     raw: v.any(),
     testMode: v.boolean(),
   })
-    .index("by_razorpayId", ["razorpayId"])
+    .index("by_razorpayRefundId", ["razorpayRefundId"])
     .index("by_idempotencyKey", ["idempotencyKey"]),
   customers: defineTable({
-    razorpayId: v.string(),
+    razorpayCustomerId: v.string(),
     name: v.optional(v.string()),
     email: v.optional(v.string()),
     contact: v.optional(v.string()),
@@ -102,16 +109,16 @@ export default defineSchema({
     notes,
     idempotencyKey: v.optional(v.string()),
     createdAt: v.number(),
-    updatedAtProvider: v.number(),
+    providerUpdatedAt: v.number(),
     ...linkage,
     raw: v.any(),
     testMode: v.boolean(),
   })
-    .index("by_razorpayId", ["razorpayId"])
-    .index("by_testMode_and_userId", ["testMode", "userId"])
+    .index("by_razorpayCustomerId", ["razorpayCustomerId"])
+    .index("by_userId_and_testMode", ["userId", "testMode"])
     .index("by_idempotencyKey", ["idempotencyKey"]),
   plans: defineTable({
-    razorpayId: v.string(),
+    razorpayPlanId: v.string(),
     period: v.string(),
     interval: v.number(),
     itemName: v.string(),
@@ -121,55 +128,55 @@ export default defineSchema({
     notes,
     idempotencyKey: v.optional(v.string()),
     createdAt: v.number(),
-    updatedAtProvider: v.number(),
+    providerUpdatedAt: v.number(),
     ...linkage,
     raw: v.any(),
     testMode: v.boolean(),
   })
-    .index("by_razorpayId", ["razorpayId"])
+    .index("by_razorpayPlanId", ["razorpayPlanId"])
     .index("by_idempotencyKey_and_testMode", ["idempotencyKey", "testMode"])
     .index("by_testMode", ["testMode"]),
   subscriptions: defineTable({
-    razorpayId: v.string(),
-    planId: v.string(),
-    customerId: v.optional(v.string()),
-    status: v.string(),
+    razorpaySubscriptionId: v.string(),
+    razorpayPlanId: v.string(),
+    razorpayCustomerId: v.optional(v.string()),
+    status: subscriptionStatusValidator,
     rawStatus: v.optional(v.string()),
     quantity: v.number(),
     totalCount: v.number(),
     paidCount: v.number(),
     remainingCount: v.number(),
-    currentStart: v.optional(v.number()),
-    currentEnd: v.optional(v.number()),
+    currentStartAt: v.optional(v.number()),
+    currentEndAt: v.optional(v.number()),
     chargeAt: v.optional(v.number()),
     startAt: v.optional(v.number()),
     endAt: v.optional(v.number()),
     endedAt: v.optional(v.number()),
-    expireBy: v.optional(v.number()),
+    expiresAt: v.optional(v.number()),
     pausedAt: v.optional(v.number()),
     hasScheduledChanges: v.boolean(),
     shortUrl: v.optional(v.string()),
     notes,
     idempotencyKey: v.optional(v.string()),
     createdAt: v.number(),
-    updatedAtProvider: v.number(),
-    lastWebhookCreatedAtProvider: v.optional(v.number()),
+    providerUpdatedAt: v.number(),
+    lastWebhookAt: v.optional(v.number()),
     ...linkage,
     raw: v.any(),
     testMode: v.boolean(),
     createdThroughComponent: v.optional(v.boolean()),
   })
-    .index("by_razorpayId", ["razorpayId"])
+    .index("by_razorpaySubscriptionId", ["razorpaySubscriptionId"])
 
-    .index("by_testMode_and_userId", ["testMode", "userId"])
+    .index("by_userId_and_testMode_and_createdAt", ["userId", "testMode", "createdAt"])
     .index("by_userId_and_testMode_and_status", ["userId", "testMode", "status"])
     .index("by_idempotencyKey_and_testMode", ["idempotencyKey", "testMode"]),
   webhookEvents: defineTable({
     eventId: v.string(),
     event: v.string(),
-    accountId: v.optional(v.string()),
-    entityId: v.optional(v.string()),
-    createdAtProvider: v.number(),
+    razorpayAccountId: v.optional(v.string()),
+    razorpayEntityId: v.optional(v.string()),
+    providerCreatedAt: v.number(),
     receivedAt: v.number(),
     status: v.union(v.literal("processed"), v.literal("ignored"), v.literal("failed")),
     errorCode: v.optional(v.string()),
@@ -181,14 +188,18 @@ export default defineSchema({
   idempotencyRequests: defineTable({
     resource: v.union(v.literal("order"), v.literal("plan"), v.literal("subscription")),
     testMode: v.boolean(),
-    key: v.string(),
-    fingerprint: v.string(),
+    idempotencyKey: v.string(),
+    requestFingerprint: v.string(),
     status: v.union(v.literal("pending"), v.literal("completed"), v.literal("failed")),
-    razorpayId: v.optional(v.string()),
+    razorpayEntityId: v.optional(v.string()),
     errorCode: v.optional(v.string()),
     createdAt: v.number(),
     settledAt: v.optional(v.number()),
   })
-    .index("by_resource_and_testMode_and_key", ["resource", "testMode", "key"])
+    .index("by_resource_and_testMode_and_idempotencyKey", [
+      "resource",
+      "testMode",
+      "idempotencyKey",
+    ])
     .index("by_status_and_settledAt", ["status", "settledAt"]),
 });

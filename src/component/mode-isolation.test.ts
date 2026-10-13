@@ -1,5 +1,5 @@
 import { stubRazorpayEnv, restoreRazorpayTestState } from "../test-helpers.js";
-import { hmacSha256Hex } from "../shared/crypto.js";
+import { computeHmacSha256Hex } from "../shared/crypto.js";
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
@@ -33,10 +33,10 @@ const payment = (id: string, status = "captured") => ({
   amount_refunded: 0,
   created_at: 1_567_674_599,
 });
-const refund = (id: string, paymentId: string) => ({
+const refund = (id: string, razorpayPaymentId: string) => ({
   entity: "refund",
   id,
-  payment_id: paymentId,
+  payment_id: razorpayPaymentId,
   amount: 100,
   currency: "INR",
   status: "processed",
@@ -113,7 +113,7 @@ const paymentRow = (t: Harness, id: string) =>
   t.run((ctx) =>
     ctx.db
       .query("payments")
-      .withIndex("by_razorpayId", (q) => q.eq("razorpayId", id))
+      .withIndex("by_razorpayPaymentId", (q) => q.eq("razorpayPaymentId", id))
       .first(),
   );
 
@@ -122,7 +122,8 @@ test("a fake refund can never raise amountRefunded on a live-mirrored payment", 
   await mirrorLiveRows(t);
   await mismatch(
     t.action(api.refunds.create, {
-      paymentId: "pay_live",
+      speed: "normal",
+      razorpayPaymentId: "pay_live",
       amount: 1000,
       idempotencyKey: "fake_refund_on_live",
       testMode: true,
@@ -137,8 +138,8 @@ test("a fake refund can never raise amountRefunded on a live-mirrored payment", 
 
   await mismatch(
     t.mutation(internal.mutations.putTestRefund, {
-      refundId: "rfnd_test_forced",
-      paymentId: "pay_live",
+      razorpayRefundId: "rfnd_test_forced",
+      razorpayPaymentId: "pay_live",
       amount: 1000,
       notes: {},
       idempotencyKey: "forced_refund_key",
@@ -147,7 +148,8 @@ test("a fake refund can never raise amountRefunded on a live-mirrored payment", 
   );
   await notFound(
     t.action(api.refunds.create, {
-      paymentId: "pay_absent",
+      speed: "normal",
+      razorpayPaymentId: "pay_absent",
       amount: 1000,
       idempotencyKey: "fake_refund_on_nothing",
       testMode: true,
@@ -158,35 +160,48 @@ test("a fake refund can never raise amountRefunded on a live-mirrored payment", 
 test("a test-mode capture, fetch or list never reads or rewrites live rows", async () => {
   const t = convexTest(schema, modules);
   await mirrorLiveRows(t);
-  await mismatch(t.action(api.orders.fetch, { orderId: "order_mirror", testMode: true }));
+  await mismatch(t.action(api.orders.fetch, { razorpayOrderId: "order_mirror", testMode: true }));
   expect(
-    await t.action(api.orders.fetchPayments, { orderId: "order_mirror", testMode: true }),
+    await t.action(api.orders.fetchPayments, { razorpayOrderId: "order_mirror", testMode: true }),
   ).toEqual([]);
-  await mismatch(t.action(api.payments.fetch, { paymentId: "pay_live", testMode: true }));
+  await mismatch(t.action(api.payments.fetch, { razorpayPaymentId: "pay_live", testMode: true }));
   await mismatch(
     t.action(api.payments.capture, {
-      paymentId: "pay_live_authorized",
+      razorpayPaymentId: "pay_live_authorized",
       amount: 5000,
       currency: "INR",
       testMode: true,
     }),
   );
-  await mismatch(t.action(api.refunds.fetch, { refundId: "rfnd_live", testMode: true }));
-  await mismatch(t.action(api.customers.fetch, { customerId: "cust_mirror", testMode: true }));
+  await mismatch(t.action(api.refunds.fetch, { razorpayRefundId: "rfnd_live", testMode: true }));
   await mismatch(
-    t.action(api.customers.edit, { customerId: "cust_mirror", name: "Edited", testMode: true }),
+    t.action(api.customers.fetch, { razorpayCustomerId: "cust_mirror", testMode: true }),
   );
-  await mismatch(t.action(api.plans.fetch, { planId: "plan_mirror", testMode: true }));
-  await mismatch(t.action(api.subscriptions.fetch, { subscriptionId: "sub_live", testMode: true }));
+  await mismatch(
+    t.action(api.customers.edit, {
+      razorpayCustomerId: "cust_mirror",
+      name: "Edited",
+      testMode: true,
+    }),
+  );
+  await mismatch(t.action(api.plans.fetch, { razorpayPlanId: "plan_mirror", testMode: true }));
+  await mismatch(
+    t.action(api.subscriptions.fetch, { razorpaySubscriptionId: "sub_live", testMode: true }),
+  );
   for (const change of [
     api.subscriptions.cancel,
     api.subscriptions.pause,
     api.subscriptions.resume,
   ]) {
-    await mismatch(t.action(change, { subscriptionId: "sub_live", testMode: true }));
+    await mismatch(t.action(change, { razorpaySubscriptionId: "sub_live", testMode: true }));
   }
   await mismatch(
-    t.action(api.subscriptions.update, { subscriptionId: "sub_live", quantity: 3, testMode: true }),
+    t.action(api.subscriptions.update, {
+      scheduleChangeAt: "now",
+      razorpaySubscriptionId: "sub_live",
+      quantity: 3,
+      testMode: true,
+    }),
   );
   expect(await paymentRow(t, "pay_live_authorized")).toMatchObject({ status: "authorized" });
   expect(await t.run((ctx) => ctx.db.query("subscriptions").first())).toMatchObject({
@@ -197,8 +212,8 @@ test("a test-mode capture, fetch or list never reads or rewrites live rows", asy
     name: "Mirror",
   });
 
-  expect(await t.action(api.payments.list, { testMode: true })).toEqual([]);
-  expect(await t.action(api.plans.list, { testMode: true })).toEqual([]);
+  expect(await t.action(api.payments.fetchAll, { testMode: true })).toEqual([]);
+  expect(await t.action(api.plans.fetchAll, { testMode: true })).toEqual([]);
   await t.mutation(internal.mutations.putPayment, {
     raw: payment("pay_test_row"),
     observedAt,
@@ -210,36 +225,40 @@ test("a test-mode capture, fetch or list never reads or rewrites live rows", asy
     testMode: true,
   });
   expect(
-    (await t.action(api.payments.list, { testMode: true })).map((row) => row.razorpayId),
+    (await t.action(api.payments.fetchAll, { testMode: true })).map((row) => row.razorpayPaymentId),
   ).toEqual(["pay_test_row"]);
-  expect((await t.action(api.plans.list, { testMode: true })).map((row) => row.razorpayId)).toEqual(
-    ["plan_test_row"],
-  );
+  expect(
+    (await t.action(api.plans.fetchAll, { testMode: true })).map((row) => row.razorpayPlanId),
+  ).toEqual(["plan_test_row"]);
 });
 
 test("missing local rows throw RAZORPAY_NOT_FOUND on every test-mode path", async () => {
   const t = convexTest(schema, modules);
   const common = { testMode: true } as const;
-  await notFound(t.action(api.orders.fetch, { orderId: "order_none", ...common }));
-  await notFound(t.action(api.payments.fetch, { paymentId: "pay_none", ...common }));
+  await notFound(t.action(api.orders.fetch, { razorpayOrderId: "order_none", ...common }));
+  await notFound(t.action(api.payments.fetch, { razorpayPaymentId: "pay_none", ...common }));
   await notFound(
     t.action(api.payments.capture, {
-      paymentId: "pay_none",
+      razorpayPaymentId: "pay_none",
       amount: 100,
       currency: "INR",
       ...common,
     }),
   );
-  await notFound(t.action(api.refunds.fetch, { refundId: "rfnd_none", ...common }));
-  await notFound(t.action(api.customers.fetch, { customerId: "cust_none", ...common }));
+  await notFound(t.action(api.refunds.fetch, { razorpayRefundId: "rfnd_none", ...common }));
+  await notFound(t.action(api.customers.fetch, { razorpayCustomerId: "cust_none", ...common }));
   await notFound(
-    t.action(api.customers.edit, { customerId: "cust_none", name: "Nobody", ...common }),
+    t.action(api.customers.edit, { razorpayCustomerId: "cust_none", name: "Nobody", ...common }),
   );
-  await notFound(t.action(api.plans.fetch, { planId: "plan_none", ...common }));
-  await notFound(t.action(api.subscriptions.fetch, { subscriptionId: "sub_none", ...common }));
-  await notFound(t.action(api.subscriptions.cancel, { subscriptionId: "sub_none", ...common }));
+  await notFound(t.action(api.plans.fetch, { razorpayPlanId: "plan_none", ...common }));
   await notFound(
-    t.mutation(internal.mutations.markVerified, { paymentId: "pay_none", testMode: false }),
+    t.action(api.subscriptions.fetch, { razorpaySubscriptionId: "sub_none", ...common }),
+  );
+  await notFound(
+    t.action(api.subscriptions.cancel, { razorpaySubscriptionId: "sub_none", ...common }),
+  );
+  await notFound(
+    t.mutation(internal.mutations.markVerified, { razorpayPaymentId: "pay_none", testMode: false }),
   );
 });
 
@@ -250,6 +269,7 @@ test("a completed claim whose mirror vanished is RAZORPAY_NOT_FOUND", async () =
       table: "orders" as const,
       create: () =>
         t.action(api.orders.create, {
+          partialPayment: false,
           amount: 5000,
           currency: "INR",
           idempotencyKey: "orphan_order_key",
@@ -271,7 +291,9 @@ test("a completed claim whose mirror vanished is RAZORPAY_NOT_FOUND", async () =
       table: "subscriptions" as const,
       create: () =>
         t.action(api.subscriptions.create, {
-          planId: "plan_x",
+          quantity: 1,
+          customerNotify: true,
+          razorpayPlanId: "plan_x",
           totalCount: 3,
           idempotencyKey: "orphan_subscription_key",
           testMode: true,
@@ -291,24 +313,27 @@ test("a completed claim whose mirror vanished is RAZORPAY_NOT_FOUND", async () =
 test("every test-mode create tags its mirror and uses a long digest id", async () => {
   const t = convexTest(schema, modules);
   const created = await t.action(api.orders.create, {
+    partialPayment: false,
     amount: 5000,
     currency: "INR",
     idempotencyKey: "tagged_order_key",
     testMode: true,
   });
   expect(created.order).toMatchObject({ testMode: true });
-  expect(created.order.razorpayId).toMatch(/^order_test_[0-9a-f]{20}$/);
+  expect(created.order.razorpayOrderId).toMatch(/^order_test_[0-9a-f]{20}$/);
   const keyless = await t.action(api.orders.create, {
+    partialPayment: false,
     amount: 5000,
     currency: "INR",
     testMode: true,
   });
   const keylessAgain = await t.action(api.orders.create, {
+    partialPayment: false,
     amount: 5000,
     currency: "INR",
     testMode: true,
   });
-  expect(keyless.order.razorpayId).not.toBe(keylessAgain.order.razorpayId);
+  expect(keyless.order.razorpayOrderId).not.toBe(keylessAgain.order.razorpayOrderId);
   const customerRow = await t.action(api.customers.create, {
     name: "Tagged",
     email: "tagged@example.test",
@@ -322,7 +347,9 @@ test("every test-mode create tags its mirror and uses a long digest id", async (
     testMode: true,
   });
   const subscriptionRow = await t.action(api.subscriptions.create, {
-    planId: planRow.razorpayId,
+    quantity: 1,
+    customerNotify: true,
+    razorpayPlanId: planRow.razorpayPlanId,
     totalCount: 3,
     testMode: true,
   });
@@ -338,13 +365,14 @@ test("every test-mode create tags its mirror and uses a long digest id", async (
     testMode: true,
   });
   const refundRow = await t.action(api.refunds.create, {
-    paymentId: "pay_to_refund",
+    speed: "normal",
+    razorpayPaymentId: "pay_to_refund",
     amount: 100,
     receipt: "tagged-refund",
     testMode: true,
   });
   expect(refundRow).toMatchObject({ testMode: true });
-  expect(refundRow.razorpayId).toMatch(/^rfnd_test_[0-9a-f]{20}$/);
+  expect(refundRow.razorpayRefundId).toMatch(/^rfnd_test_[0-9a-f]{20}$/);
   expect(await paymentRow(t, "pay_to_refund")).toMatchObject({
     testMode: true,
     amountRefunded: 100,
@@ -356,7 +384,7 @@ async function ingest(t: Harness, eventId: string, event: string, payload: unkno
   const body = JSON.stringify({ entity: "event", event, created_at: 1_567_674_600, payload });
   return t.action(api.webhooks.ingest, {
     body,
-    signature: await hmacSha256Hex(webhookSecret, body),
+    signature: await computeHmacSha256Hex(webhookSecret, body),
     eventId,
   });
 }
@@ -391,7 +419,7 @@ test("webhook rows are live unless the deployment runs in test mode", async () =
   const tags = async (table: "orders" | "payments" | "refunds" | "subscriptions") =>
     Object.fromEntries(
       (await t.run((ctx) => ctx.db.query(table).take(1000))).map((row) => [
-        row.razorpayId,
+        row.raw.id,
         row.testMode,
       ]),
     );
@@ -419,7 +447,7 @@ test("a webhook never re-tags an existing mirrored row", async () => {
   expect(await paymentRow(t, "pay_retag")).toMatchObject({ testMode: false });
 });
 
-test("testMode is tri-state: explicit false overrides RAZORPAY_TEST_MODE, undefined defers to it", async () => {
+test("a false testMode option cannot disable component env test mode", async () => {
   const t = convexTest(schema, modules);
   const args = { amount: 5000, currency: "INR" };
   const providerOrder = {
@@ -430,33 +458,46 @@ test("testMode is tri-state: explicit false overrides RAZORPAY_TEST_MODE, undefi
   vi.stubGlobal("fetch", fetch);
 
   vi.stubEnv("RAZORPAY_TEST_MODE", "true");
-  expect((await t.action(api.orders.create, args)).order.testMode).toBe(true);
-  expect((await t.action(api.orders.create, { ...args, testMode: true })).order.testMode).toBe(
-    true,
-  );
+  expect(
+    (await t.action(api.orders.create, { partialPayment: false, ...args })).order.testMode,
+  ).toBe(true);
+  expect(
+    (await t.action(api.orders.create, { partialPayment: false, ...args, testMode: true })).order
+      .testMode,
+  ).toBe(true);
   expect(fetch).not.toHaveBeenCalled();
-  expect((await t.action(api.orders.create, { ...args, testMode: false })).order).toMatchObject({
-    razorpayId: "order_from_provider",
-    testMode: false,
+  expect(
+    (await t.action(api.orders.create, { partialPayment: false, ...args, testMode: false })).order,
+  ).toMatchObject({
+    testMode: true,
   });
-  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(fetch).not.toHaveBeenCalled();
 
   stubRazorpayEnv({ testMode: "true" });
-  await expect(t.action(api.orders.create, { ...args, testMode: false })).rejects.toMatchObject({
-    data: { code: "RAZORPAY_NOT_CONFIGURED" },
+  await expect(
+    t.action(api.orders.create, { partialPayment: false, ...args, testMode: false }),
+  ).resolves.toMatchObject({
+    order: { testMode: true },
   });
-  expect((await t.action(api.orders.create, args)).order.testMode).toBe(true);
+  expect(
+    (await t.action(api.orders.create, { partialPayment: false, ...args })).order.testMode,
+  ).toBe(true);
 
   stubRazorpayEnv({});
-  expect((await t.action(api.orders.create, { ...args, testMode: true })).order.testMode).toBe(
-    true,
-  );
-  await expect(t.action(api.orders.create, args)).rejects.toMatchObject({
+  expect(
+    (await t.action(api.orders.create, { partialPayment: false, ...args, testMode: true })).order
+      .testMode,
+  ).toBe(true);
+  await expect(
+    t.action(api.orders.create, { partialPayment: false, ...args }),
+  ).rejects.toMatchObject({
     data: { code: "RAZORPAY_NOT_CONFIGURED" },
   });
 
   stubRazorpayEnv({ keyId: "rzp_live_fixture", keySecret: "fake_secret", testMode: "true" });
-  await expect(t.action(api.orders.create, args)).rejects.toMatchObject({
+  await expect(
+    t.action(api.orders.create, { partialPayment: false, ...args }),
+  ).rejects.toMatchObject({
     data: { code: "RAZORPAY_LIVE_KEY_TEST_MODE" },
   });
 });
@@ -471,7 +512,8 @@ test("receipts are printable ASCII for orders and refunds", async () => {
   for (const receipt of ["", "caf\u00e9", "line\nbreak", "x".repeat(41)]) {
     await expect(
       t.action(api.refunds.create, {
-        paymentId: "pay_receipt",
+        speed: "normal",
+        razorpayPaymentId: "pay_receipt",
         amount: 100,
         receipt,
         idempotencyKey: "receipt_validation_key",
@@ -484,7 +526,13 @@ test("receipts are printable ASCII for orders and refunds", async () => {
       },
     });
     await expect(
-      t.action(api.orders.create, { amount: 5000, currency: "INR", receipt, testMode: true }),
+      t.action(api.orders.create, {
+        partialPayment: false,
+        amount: 5000,
+        currency: "INR",
+        receipt,
+        testMode: true,
+      }),
     ).rejects.toMatchObject({
       data: {
         code: "RAZORPAY_INVALID_ARGUMENT",
@@ -494,7 +542,8 @@ test("receipts are printable ASCII for orders and refunds", async () => {
   }
   expect(
     await t.action(api.refunds.create, {
-      paymentId: "pay_receipt",
+      speed: "normal",
+      razorpayPaymentId: "pay_receipt",
       amount: 100,
       receipt: "Refund #1 (ok)",
       testMode: true,

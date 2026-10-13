@@ -82,16 +82,17 @@ test("live customer create, keyed retry, profile refresh, and fetch mirror provi
   const repeated = await t.action(api.customers.create, args);
   expect(repeated._id).toBe(created._id);
   const edited = await t.action(api.customers.edit, {
-    customerId: created.razorpayId,
+    razorpayCustomerId: created.razorpayCustomerId,
     name: "Alice Updated",
     testMode: false,
   });
   expect(edited.name).toBe("Alice Updated");
   const fetched = await t.action(api.customers.fetch, {
-    customerId: created.razorpayId,
+    razorpayCustomerId: created.razorpayCustomerId,
     testMode: false,
   });
-  expect(fetched._id).toBe(created._id);
+  expect(fetched.razorpayCustomerId).toBe(created.razorpayCustomerId);
+  expect(fetched).not.toHaveProperty("_id");
   expect(fetched.name).toBe("Alice Updated");
   const refreshed = await t.action(api.customers.getOrCreate, {
     ...args,
@@ -99,8 +100,8 @@ test("live customer create, keyed retry, profile refresh, and fetch mirror provi
     idempotencyKey: "customer_refresh_fixture_key",
   });
   expect(refreshed.name).toBe("Alice Refreshed");
-  expect(await t.query(api.customers.getByUser, { userId: "user_live_customer" })).toMatchObject({
-    razorpayId: "cust_live_fixture",
+  expect(await t.query(api.customers.get, { userId: "user_live_customer" })).toMatchObject({
+    razorpayCustomerId: "cust_live_fixture",
     name: "Alice Refreshed",
   });
   expect(requests).toEqual([
@@ -160,46 +161,51 @@ test("live payment capture and refund mirror provider state without accepting an
   await t.mutation(internal.mutations.putPayment, { raw: initialPayment, observedAt: Date.now() });
 
   const captured = await t.action(api.payments.capture, {
-    paymentId: "pay_live_fixture",
+    razorpayPaymentId: "pay_live_fixture",
     amount: 5000,
     currency: "INR",
     testMode: false,
   });
   expect(captured).toMatchObject({ status: "captured", captured: true });
   const refunded = await t.action(api.refunds.create, {
-    paymentId: "pay_live_fixture",
+    speed: "normal",
+    razorpayPaymentId: "pay_live_fixture",
     amount: 2000,
     idempotencyKey: "refund_live_fixture_key",
     testMode: false,
   });
   expect(refunded).toMatchObject({
-    razorpayId: "rfnd_live_fixture",
-    paymentId: "pay_live_fixture",
+    razorpayRefundId: "rfnd_live_fixture",
+    razorpayPaymentId: "pay_live_fixture",
     amount: 2000,
   });
   expect(
     await t.run((ctx) =>
       ctx.db
         .query("refunds")
-        .withIndex("by_razorpayId", (q) => q.eq("razorpayId", refunded.razorpayId))
+        .withIndex("by_razorpayRefundId", (q) =>
+          q.eq("razorpayRefundId", refunded.razorpayRefundId),
+        )
         .unique(),
     ),
   ).toMatchObject({
     _id: refunded._id,
-    razorpayId: "rfnd_live_fixture",
-    paymentId: "pay_live_fixture",
+    razorpayRefundId: "rfnd_live_fixture",
+    razorpayPaymentId: "pay_live_fixture",
     amount: 2000,
     status: "processed",
     testMode: false,
   });
-  expect((await t.action(api.refunds.fetch, { refundId: refunded.razorpayId }))._id).toBe(
-    refunded._id,
-  );
-  expect((await t.action(api.payments.fetch, { paymentId: captured.razorpayId }))._id).toBe(
-    captured._id,
-  );
-  expect(await t.action(api.payments.list, { count: 1, skip: 0 })).toMatchObject([
-    { razorpayId: "pay_live_fixture", status: "captured" },
+  expect(
+    (await t.action(api.refunds.fetch, { razorpayRefundId: refunded.razorpayRefundId }))
+      .razorpayRefundId,
+  ).toBe(refunded.razorpayRefundId);
+  expect(
+    (await t.action(api.payments.fetch, { razorpayPaymentId: captured.razorpayPaymentId }))
+      .razorpayPaymentId,
+  ).toBe(captured.razorpayPaymentId);
+  expect(await t.action(api.payments.fetchAll, { count: 1, skip: 0 })).toMatchObject([
+    { razorpayPaymentId: "pay_live_fixture", status: "captured" },
   ]);
   expect(fetch).toHaveBeenCalledTimes(5);
 });
@@ -258,18 +264,30 @@ test("live duplicate-receipt order is reconciled and its provider payments are m
   const t = convexTest(schema, modules);
 
   const created = await t.action(api.orders.create, {
+    partialPayment: false,
     amount: 5000,
     currency: "INR",
     receipt: "rcpt_reconciled",
     idempotencyKey: "reconciled_order_key",
     testMode: false,
   });
-  expect(created.order.razorpayId).toBe(order.id);
-  const fetched = await t.action(api.orders.fetch, { orderId: order.id, testMode: false });
-  expect(fetched._id).toBe(created.order._id);
-  const payments = await t.action(api.orders.fetchPayments, { orderId: order.id, testMode: false });
-  expect(payments).toMatchObject([{ razorpayId: payment.id, orderId: order.id }]);
-  expect(await t.query(api.payments.listForOrder, { orderId: order.id })).toHaveLength(1);
+  expect(created.order.razorpayOrderId).toBe(order.id);
+  const fetched = await t.action(api.orders.fetch, { razorpayOrderId: order.id, testMode: false });
+  expect(fetched.razorpayOrderId).toBe(created.order.razorpayOrderId);
+  expect(fetched).not.toHaveProperty("_id");
+  const payments = await t.action(api.orders.fetchPayments, {
+    razorpayOrderId: order.id,
+    testMode: false,
+  });
+  expect(payments).toMatchObject([{ razorpayPaymentId: payment.id, razorpayOrderId: order.id }]);
+  expect(
+    await t
+      .query(api.payments.list, {
+        paginationOpts: { numItems: 100, cursor: null },
+        razorpayOrderId: order.id,
+      })
+      .then(({ page }) => page),
+  ).toHaveLength(0);
   expect(requests).toEqual([
     "POST /v1/orders",
     "GET /v1/orders?receipt=rcpt_reconciled&count=1",
@@ -286,22 +304,22 @@ test("explicit test mode refuses missing mirrors without calling the provider", 
   const t = convexTest(schema, modules);
 
   await expect(
-    t.action(api.orders.fetch, { orderId: "order_missing", testMode: true }),
+    t.action(api.orders.fetch, { razorpayOrderId: "order_missing", testMode: true }),
   ).rejects.toMatchObject({ data: { code: "RAZORPAY_NOT_FOUND" } });
   await expect(
-    t.action(api.payments.fetch, { paymentId: "pay_missing", testMode: true }),
+    t.action(api.payments.fetch, { razorpayPaymentId: "pay_missing", testMode: true }),
   ).rejects.toMatchObject({ data: { code: "RAZORPAY_NOT_FOUND" } });
   await expect(
-    t.action(api.refunds.fetch, { refundId: "rfnd_missing", testMode: true }),
+    t.action(api.refunds.fetch, { razorpayRefundId: "rfnd_missing", testMode: true }),
   ).rejects.toMatchObject({ data: { code: "RAZORPAY_NOT_FOUND" } });
   await expect(
-    t.action(api.customers.fetch, { customerId: "cust_missing", testMode: true }),
+    t.action(api.customers.fetch, { razorpayCustomerId: "cust_missing", testMode: true }),
   ).rejects.toMatchObject({ data: { code: "RAZORPAY_NOT_FOUND" } });
   await expect(
-    t.action(api.plans.fetch, { planId: "plan_missing", testMode: true }),
+    t.action(api.plans.fetch, { razorpayPlanId: "plan_missing", testMode: true }),
   ).rejects.toMatchObject({ data: { code: "RAZORPAY_NOT_FOUND" } });
   await expect(
-    t.action(api.subscriptions.fetch, { subscriptionId: "sub_missing", testMode: true }),
+    t.action(api.subscriptions.fetch, { razorpaySubscriptionId: "sub_missing", testMode: true }),
   ).rejects.toMatchObject({ data: { code: "RAZORPAY_NOT_FOUND" } });
   expect(fetch).not.toHaveBeenCalled();
 });
@@ -314,10 +332,16 @@ test("invalid public create and capture arguments fail with structured errors be
   const t = convexTest(schema, modules);
 
   await expect(
-    t.action(api.orders.create, { amount: 1, currency: "INR", testMode: true }),
+    t.action(api.orders.create, {
+      partialPayment: false,
+      amount: 1,
+      currency: "INR",
+      testMode: true,
+    }),
   ).rejects.toMatchObject({ data: { code: "RAZORPAY_INVALID_ARGUMENT" } });
   await expect(
     t.action(api.orders.create, {
+      partialPayment: false,
       amount: 5000,
       currency: "INR",
       receipt: "x".repeat(41),
@@ -333,14 +357,15 @@ test("invalid public create and capture arguments fail with structured errors be
   ).rejects.toMatchObject({ data: { code: "RAZORPAY_INVALID_ARGUMENT" } });
   await expect(
     t.action(api.refunds.create, {
-      paymentId: "pay_missing",
+      speed: "normal",
+      razorpayPaymentId: "pay_missing",
       amount: 100,
       testMode: true,
     }),
   ).rejects.toMatchObject({ data: { code: "RAZORPAY_IDEMPOTENCY_REQUIRED" } });
   await expect(
     t.action(api.payments.capture, {
-      paymentId: "pay_missing",
+      razorpayPaymentId: "pay_missing",
       amount: 0,
       currency: "INR",
       testMode: true,

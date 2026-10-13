@@ -1,10 +1,14 @@
+import schema from "../../example/convex/schema.js";
+import componentSchema from "./schema.js";
 import { stubRazorpayEnv, restoreRazorpayTestState } from "../test-helpers.js";
 import { register } from "@operatornest/convex-razorpay/test";
-import { hmacSha256Hex } from "@operatornest/convex-razorpay";
+import { computeHmacSha256Hex } from "@operatornest/convex-razorpay";
 import { convexTest } from "convex-test";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi, describe } from "vitest";
 import { components } from "../../example/convex/_generated/api.js";
-import schema from "../../example/convex/schema.js";
+import { api, internal } from "./_generated/api.js";
+import { classifyProviderError } from "../shared/providerErrors.js";
+import { paymentFields } from "./mapping.js";
 
 const modules = import.meta.glob("../../example/convex/**/*.ts");
 
@@ -24,7 +28,7 @@ const planArgs = {
 };
 
 const subscriptionArgs = {
-  planId: "plan_fixture",
+  razorpayPlanId: "plan_fixture",
   totalCount: 12,
   idempotencyKey: "subscription-idempotency-key",
 };
@@ -50,7 +54,7 @@ test("keyed plan create reuses completed result and rejects changed body", async
   register(t);
   const first = await t.action(components.razorpay.plans.create, planArgs);
   const retry = await t.action(components.razorpay.plans.create, planArgs);
-  expect(retry.razorpayId).toBe(first.razorpayId);
+  expect(retry.razorpayPlanId).toBe(first.razorpayPlanId);
   expect(fetch).toHaveBeenCalledTimes(1);
   await expect(
     t.action(components.razorpay.plans.create, {
@@ -75,10 +79,18 @@ test("uncertain keyed subscription result stays reserved before a retry", async 
   const t = convexTest(schema, modules);
   register(t);
   await expect(
-    t.action(components.razorpay.subscriptions.create, subscriptionArgs),
+    t.action(components.razorpay.subscriptions.create, {
+      quantity: 1,
+      customerNotify: true,
+      ...subscriptionArgs,
+    }),
   ).rejects.toThrow();
   await expect(
-    t.action(components.razorpay.subscriptions.create, subscriptionArgs),
+    t.action(components.razorpay.subscriptions.create, {
+      quantity: 1,
+      customerNotify: true,
+      ...subscriptionArgs,
+    }),
   ).rejects.toThrow();
   expect(fetch).toHaveBeenCalledTimes(1);
 });
@@ -114,7 +126,7 @@ test("definitive plan 4xx releases the key for a corrected request", async () =>
     ...planArgs,
     item: { ...planArgs.item, amount: 79900 },
   });
-  expect(corrected.razorpayId).toBe("plan_corrected");
+  expect(corrected.razorpayPlanId).toBe("plan_corrected");
   expect(fetch).toHaveBeenCalledTimes(2);
 });
 
@@ -143,7 +155,7 @@ test("definitive plan 4xx releases the key for an identical retry", async () => 
   register(t);
   await expect(t.action(components.razorpay.plans.create, planArgs)).rejects.toThrow();
   const retry = await t.action(components.razorpay.plans.create, planArgs);
-  expect(retry.razorpayId).toBe("plan_same_request_retry");
+  expect(retry.razorpayPlanId).toBe("plan_same_request_retry");
   expect(fetch).toHaveBeenCalledTimes(2);
 });
 
@@ -216,7 +228,7 @@ test("stale plan claim reconciles note key before posting and tolerates unrelate
   await expect(t.action(components.razorpay.plans.create, planArgs)).rejects.toThrow();
   vi.setSystemTime(Date.now() + 11 * 60_000);
   const recovered = await t.action(components.razorpay.plans.create, planArgs);
-  expect(recovered.razorpayId).toBe("plan_recovered");
+  expect(recovered.razorpayPlanId).toBe("plan_recovered");
   expect(fetch).toHaveBeenCalledTimes(2);
 });
 
@@ -299,7 +311,7 @@ test("stale subscription claim reconciles provider notes before reposting", asyn
             {
               id: "sub_recovered",
               entity: "subscription",
-              plan_id: subscriptionArgs.planId,
+              plan_id: subscriptionArgs.razorpayPlanId,
               status: "created",
               quantity: 1,
               total_count: subscriptionArgs.totalCount,
@@ -317,11 +329,19 @@ test("stale subscription claim reconciles provider notes before reposting", asyn
   const t = convexTest(schema, modules);
   register(t);
   await expect(
-    t.action(components.razorpay.subscriptions.create, subscriptionArgs),
+    t.action(components.razorpay.subscriptions.create, {
+      quantity: 1,
+      customerNotify: true,
+      ...subscriptionArgs,
+    }),
   ).rejects.toThrow();
   vi.setSystemTime(Date.now() + 11 * 60_000);
-  const recovered = await t.action(components.razorpay.subscriptions.create, subscriptionArgs);
-  expect(recovered.razorpayId).toBe("sub_recovered");
+  const recovered = await t.action(components.razorpay.subscriptions.create, {
+    quantity: 1,
+    customerNotify: true,
+    ...subscriptionArgs,
+  });
+  expect(recovered.razorpaySubscriptionId).toBe("sub_recovered");
   expect(fetch).toHaveBeenCalledTimes(2);
   vi.useRealTimers();
 });
@@ -353,13 +373,12 @@ test("support can release a pending idempotency claim for a manually resolved ke
   register(t);
   await expect(t.action(components.razorpay.plans.create, planArgs)).rejects.toThrow();
   expect(
-    await t.mutation(components.razorpay.idempotency.release, {
-      resource: "plan",
-      key: planArgs.idempotencyKey,
+    await t.mutation(components.razorpay.plans.releaseIdempotency, {
+      idempotencyKey: planArgs.idempotencyKey,
     }),
   ).toBe(true);
   const created = await t.action(components.razorpay.plans.create, planArgs);
-  expect(created.razorpayId).toBe("plan_after_release");
+  expect(created.razorpayPlanId).toBe("plan_after_release");
 });
 
 test("refund creation derives its provider key from receipt and rejects keyless requests", async () => {
@@ -383,7 +402,8 @@ test("refund creation derives its provider key from receipt and rejects keyless 
   const t = convexTest(schema, modules);
   register(t);
   const refunded = await t.action(components.razorpay.refunds.create, {
-    paymentId: "pay_refund_target",
+    speed: "normal",
+    razorpayPaymentId: "pay_refund_target",
     amount: 100,
     receipt: "refund receipt 01",
   });
@@ -395,13 +415,18 @@ test("refund creation derives its provider key from receipt and rejects keyless 
     "X-Refund-Idempotency": expect.stringMatching(/^receipt_[0-9a-f]{64}$/),
   });
   await expect(
-    t.action(components.razorpay.refunds.create, { paymentId: "pay_refund_target", amount: 100 }),
+    t.action(components.razorpay.refunds.create, {
+      speed: "normal",
+      razorpayPaymentId: "pay_refund_target",
+      amount: 100,
+    }),
   ).rejects.toMatchObject({
     data: { code: "RAZORPAY_IDEMPOTENCY_REQUIRED" },
   });
   await expect(
     t.action(components.razorpay.refunds.create, {
-      paymentId: "pay_refund_target",
+      speed: "normal",
+      razorpayPaymentId: "pay_refund_target",
       amount: 100,
       idempotencyKey: "short-key",
     }),
@@ -439,13 +464,14 @@ test("mode changes isolate claims while customer and refund mirrors reject oppos
   });
   await t.action(components.razorpay.webhooks.ingest, {
     body: paymentEvent,
-    signature: await hmacSha256Hex("whsec_mode_fixture", paymentEvent),
+    signature: await computeHmacSha256Hex("whsec_mode_fixture", paymentEvent),
     eventId: "evt_mode_fixture_payment",
   });
   const cases: Array<{ create: () => Promise<unknown>; retry: () => Promise<unknown> }> = [
     {
       create: () =>
         t.action(components.razorpay.orders.create, {
+          partialPayment: false,
           amount: 50000,
           currency: "INR",
           idempotencyKey: "mode_order_key",
@@ -453,6 +479,7 @@ test("mode changes isolate claims while customer and refund mirrors reject oppos
         }),
       retry: () =>
         t.action(components.razorpay.orders.create, {
+          partialPayment: false,
           amount: 50000,
           currency: "INR",
           idempotencyKey: "mode_order_key",
@@ -476,12 +503,16 @@ test("mode changes isolate claims while customer and refund mirrors reject oppos
     {
       create: () =>
         t.action(components.razorpay.subscriptions.create, {
+          quantity: 1,
+          customerNotify: true,
           ...subscriptionArgs,
           idempotencyKey: "mode_subscription_key",
           testMode: true,
         }),
       retry: () =>
         t.action(components.razorpay.subscriptions.create, {
+          quantity: 1,
+          customerNotify: true,
           ...subscriptionArgs,
           idempotencyKey: "mode_subscription_key",
           testMode: false,
@@ -508,14 +539,16 @@ test("mode changes isolate claims while customer and refund mirrors reject oppos
     {
       create: () =>
         t.action(components.razorpay.refunds.create, {
-          paymentId: "pay_mode_fixture",
+          speed: "normal",
+          razorpayPaymentId: "pay_mode_fixture",
           amount: 100,
           idempotencyKey: "mode_refund_key",
           testMode: true,
         }),
       retry: () =>
         t.action(components.razorpay.refunds.create, {
-          paymentId: "pay_mode_fixture",
+          speed: "normal",
+          razorpayPaymentId: "pay_mode_fixture",
           amount: 100,
           idempotencyKey: "mode_refund_key",
           testMode: false,
@@ -523,6 +556,7 @@ test("mode changes isolate claims while customer and refund mirrors reject oppos
     },
   ];
   await Promise.all(cases.map(({ create }) => create()));
+  vi.stubEnv("RAZORPAY_TEST_MODE", "false");
   await Promise.all(
     cases.map(({ retry }, index) =>
       expect(retry()).rejects.toMatchObject({
@@ -541,4 +575,272 @@ test("a configured secret without a key id fails as not configured", async () =>
   await expect(t.action(components.razorpay.plans.create, planArgs)).rejects.toMatchObject({
     data: { code: "RAZORPAY_NOT_CONFIGURED" },
   });
+});
+
+describe("idempotency", () => {
+  const componentModules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
+
+  const harness = () => convexTest(componentSchema, componentModules);
+
+  const invalid = { data: { code: "RAZORPAY_INVALID_ARGUMENT" } };
+
+  const subscription = {
+    entity: "subscription",
+    id: "sub_ordered",
+    plan_id: "plan_ordered",
+    status: "paused",
+    quantity: 2,
+    total_count: 12,
+    paid_count: 1,
+    remaining_count: 11,
+  };
+
+  const payment = {
+    entity: "payment",
+    id: "pay_mode",
+    amount: 500,
+    currency: "INR",
+    status: "authorized",
+  };
+
+  beforeEach(() =>
+    stubRazorpayEnv({
+      keyId: "rzp_test_fixture",
+      keySecret: "fixture_secret",
+      webhookSecret: "fixture_webhook",
+    }),
+  );
+
+  afterEach(restoreRazorpayTestState);
+
+  test("reserved caller notes cannot complete another order claim", async () => {
+    const t = harness();
+    await t.mutation(internal.idempotency.claim, {
+      resource: "order",
+      testMode: false,
+      idempotencyKey: "victim_key_123",
+      requestFingerprint: "victim",
+    });
+    await expect(
+      t.action(api.orders.create, {
+        partialPayment: false,
+        amount: 1000,
+        currency: "INR",
+        notes: { operatornestIdempotencyKey: "victim_key_123" },
+        testMode: true,
+      }),
+    ).rejects.toMatchObject(invalid);
+    expect(await t.run((ctx) => ctx.db.query("idempotencyRequests").first())).toMatchObject({
+      status: "pending",
+    });
+  });
+
+  test("provider notes without a fingerprint cannot settle a claim", async () => {
+    const t = harness();
+    await t.mutation(internal.idempotency.claim, {
+      resource: "order",
+      testMode: false,
+      idempotencyKey: "victim_key_123",
+      requestFingerprint: "victim",
+    });
+    await t.mutation(internal.mutations.putOrder, {
+      raw: {
+        entity: "order",
+        id: "order_attacker",
+        amount: 1000,
+        currency: "INR",
+        status: "created",
+        notes: { operatornestIdempotencyKey: "victim_key_123" },
+      },
+      observedAt: 100,
+    });
+    expect(await t.run((ctx) => ctx.db.query("idempotencyRequests").first())).toMatchObject({
+      status: "pending",
+    });
+  });
+
+  test.each(["active", "paused"])(
+    "subscription fetch applies current %s state regardless of local observation time",
+    async (status) => {
+      const t = harness();
+      await t.mutation(internal.mutations.putSubscription, { raw: subscription, observedAt: 200 });
+      const row = await t.mutation(internal.mutations.putSubscription, {
+        raw: { ...subscription, status, quantity: 1 },
+        observedAt: 100,
+      });
+      expect(row).toMatchObject({ status, quantity: 1, providerUpdatedAt: 100 });
+    },
+  );
+
+  test("opposite-mode payment writes reject without changing the mirror", async () => {
+    const t = harness();
+    await t.mutation(internal.mutations.putPayment, {
+      raw: payment,
+      observedAt: 100,
+      testMode: false,
+    });
+    await expect(
+      t.mutation(internal.mutations.putPayment, {
+        raw: { ...payment, status: "captured", captured: true },
+        observedAt: 200,
+        testMode: true,
+      }),
+    ).rejects.toMatchObject({ data: { code: "RAZORPAY_MODE_MISMATCH" } });
+    expect(await t.run((ctx) => ctx.db.query("payments").first())).toMatchObject({
+      status: "authorized",
+      testMode: false,
+    });
+  });
+
+  test("provider note normalization preserves surrogate pairs", () => {
+    const text = "x".repeat(255) + "😀";
+    const notes = paymentFields({ ...payment, notes: { [text]: text } }, 100).notes;
+    expect(Object.keys(notes)[0]).toBe("x".repeat(255));
+    expect(Object.values(notes)[0]).toBe("x".repeat(255));
+  });
+
+  test("provider errors expose fixed messages without descriptions", () => {
+    const a = classifyProviderError(400, {
+      error: { code: "BAD_REQUEST_ERROR", description: "private value" },
+    });
+    const b = classifyProviderError(400, {
+      error: { code: "BAD_REQUEST_ERROR", description: "other value" },
+    });
+    expect(a.message).toBe(b.message);
+    expect(a).toMatchObject({ providerStatus: 400, providerCode: "BAD_REQUEST_ERROR" });
+  });
+});
+
+describe("idempotency", () => {
+  const componentModules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
+
+  const harness = () => convexTest(componentSchema, componentModules);
+
+  const pending = { data: { code: "RAZORPAY_IDEMPOTENCY_PENDING" } };
+
+  const order = {
+    entity: "order",
+    id: "order_fixture",
+    amount: 1000,
+    currency: "INR",
+    status: "created",
+  };
+
+  const subscription = {
+    entity: "subscription",
+    id: "sub_fixture",
+    plan_id: "plan_fixture",
+    status: "active",
+    total_count: 12,
+    paid_count: 1,
+    remaining_count: 11,
+  };
+
+  const createPlanArgs = {
+    period: "monthly" as const,
+    interval: 1,
+    item: { name: "Monthly Plan", amount: 1000, currency: "INR" },
+  };
+
+  type CreateOptions = { idempotencyKey: string; testMode?: boolean };
+
+  const planRaw = { entity: "plan", id: "plan_fixture", ...createPlanArgs };
+
+  const resourceCases = [
+    {
+      resource: "order" as const,
+      create: (t: ReturnType<typeof harness>, options: CreateOptions) =>
+        t.action(api.orders.create, {
+          partialPayment: false,
+          amount: 1000,
+          currency: "INR",
+          ...options,
+        }),
+      raw: order,
+    },
+    {
+      resource: "plan" as const,
+      create: (t: ReturnType<typeof harness>, options: CreateOptions) =>
+        t.action(api.plans.create, { ...createPlanArgs, ...options }),
+      raw: planRaw,
+    },
+    {
+      resource: "subscription" as const,
+      create: (t: ReturnType<typeof harness>, options: CreateOptions) =>
+        t.action(api.subscriptions.create, {
+          quantity: 1,
+          customerNotify: true,
+          razorpayPlanId: "plan_fixture",
+          totalCount: 12,
+          ...options,
+        }),
+      raw: subscription,
+    },
+  ];
+
+  beforeEach(() => {
+    stubRazorpayEnv({
+      keyId: "rzp_test_fixture",
+      keySecret: "fixture_secret",
+      webhookSecret: "fixture_webhook",
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.reject(new TypeError("Unexpected HTTP"))),
+    );
+  });
+
+  afterEach(restoreRazorpayTestState);
+
+  test.each(resourceCases)(
+    "$resource claims and completed reads are isolated by mode",
+    async ({ create, raw, resource }) => {
+      const t = harness();
+      const keyed = { idempotencyKey: "fixture_mode_key" };
+      const simulated = await create(t, { ...keyed, testMode: true });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(() =>
+          Promise.resolve(
+            Response.json({ ...raw, notes: { operatornestIdempotencyKey: keyed.idempotencyKey } }),
+          ),
+        ),
+      );
+      const live = await create(t, { ...keyed, testMode: false });
+      expect(live).toMatchObject(
+        resource === "order" ? { order: { testMode: false } } : { testMode: false },
+      );
+      expect(await create(t, { ...keyed, testMode: true })).toEqual(simulated);
+      expect(await create(t, { ...keyed, testMode: false })).toEqual(live);
+      const claims = await t.run((ctx) => ctx.db.query("idempotencyRequests").take(10));
+      expect(claims).toHaveLength(2);
+      expect(new Set(claims.map((claim) => claim.requestFingerprint)).size).toBe(2);
+    },
+  );
+
+  test.each(resourceCases)(
+    "unresolved $resource reconciliation never repeats POST",
+    async ({ create, raw }) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(1_000_000);
+      const t = harness();
+      const fetch = vi.fn((_url: string, init: RequestInit) => {
+        if (init.method === "GET")
+          return Promise.resolve(Response.json({ entity: "collection", items: [] }));
+        if (fetch.mock.calls.length === 1) return Promise.reject(new TypeError("lost response"));
+        return Promise.resolve(Response.json(raw));
+      });
+      vi.stubGlobal("fetch", fetch);
+      const keyed = { idempotencyKey: "fixture_unknown_key" };
+      await expect(create(t, keyed)).rejects.toMatchObject({
+        data: { code: "RAZORPAY_NETWORK_ERROR" },
+      });
+      vi.setSystemTime(1_660_000);
+      await expect(create(t, keyed)).rejects.toMatchObject(pending);
+      expect(fetch.mock.calls.map(([, init]) => init.method)).toEqual(["POST", "GET"]);
+      expect(await t.run((ctx) => ctx.db.query("idempotencyRequests").first())).toMatchObject({
+        status: "pending",
+      });
+    },
+  );
 });

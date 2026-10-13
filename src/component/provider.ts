@@ -1,15 +1,14 @@
-import { classifyProviderError, razorpayError } from "../shared/errors.js";
+import { readConfig, requireConfigValue } from "./config.js";
+import { razorpayError } from "../shared/errors.js";
+import { classifyProviderError } from "../shared/providerErrors.js";
 import { env } from "./_generated/server.js";
 import { collectionItems } from "./mapping.js";
 import { isRecord } from "../shared/validation.js";
 
-export function envTestMode(): boolean {
-  return env.RAZORPAY_TEST_MODE === "true";
-}
-
 export function resolveMode(requested?: boolean): boolean {
-  const enabled = requested ?? envTestMode();
-  if (enabled && env.RAZORPAY_KEY_ID?.startsWith("rzp_live_")) {
+  const config = readConfig(env);
+  const enabled = requested === true || config.testMode;
+  if (enabled && config.keyId?.startsWith("rzp_live_")) {
     throw razorpayError("RAZORPAY_LIVE_KEY_TEST_MODE");
   }
   return enabled;
@@ -17,8 +16,10 @@ export function resolveMode(requested?: boolean): boolean {
 
 export function isTestMode(requested?: boolean): boolean {
   const enabled = resolveMode(requested);
-  if (!enabled && (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET)) {
-    throw razorpayError("RAZORPAY_NOT_CONFIGURED");
+  const config = readConfig(env);
+  if (!enabled) {
+    requireConfigValue(config.keyId);
+    requireConfigValue(config.keySecret);
   }
   return enabled;
 }
@@ -34,11 +35,11 @@ export async function requestProvider(
   path: string,
   options: { body?: unknown; idempotent?: boolean; refund?: boolean; idempotencyKey?: string } = {},
 ): Promise<unknown> {
-  if (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET) {
-    throw razorpayError("RAZORPAY_NOT_CONFIGURED");
-  }
+  const config = readConfig(env);
+  const keyId = requireConfigValue(config.keyId);
+  const keySecret = requireConfigValue(config.keySecret);
   const headers: Record<string, string> = {
-    Authorization: `Basic ${btoa(`${env.RAZORPAY_KEY_ID}:${env.RAZORPAY_KEY_SECRET}`)}`,
+    Authorization: `Basic ${btoa(`${keyId}:${keySecret}`)}`,
   };
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
   if (options.refund && options.idempotencyKey)
@@ -59,7 +60,8 @@ export async function requestProvider(
     try {
       body = await response.json();
     } catch {
-      throw razorpayError("RAZORPAY_INVALID_RESPONSE");
+      if (response.ok) throw razorpayError("RAZORPAY_INVALID_RESPONSE");
+      body = undefined;
     }
   } finally {
     clearTimeout(timeout);
@@ -68,6 +70,7 @@ export async function requestProvider(
     const error = classifyProviderError(response.status, body);
     throw razorpayError(error.code, {
       providerStatus: response.status,
+      retryable: error.retryable,
       ...(error.providerCode === undefined ? {} : { providerCode: error.providerCode }),
     });
   }
@@ -83,7 +86,7 @@ export function listPath(path: string, count?: number, skip?: number): string {
 
 export async function findByIdempotencyKey(
   resource: "order" | "plan" | "subscription",
-  key: string,
+  idempotencyKey: string,
   receipt?: string,
 ): Promise<Record<string, unknown>> {
   const pageSize = 100;
@@ -98,7 +101,9 @@ export async function findByIdempotencyKey(
     const items = collectionItems(response);
     const found = items.find(
       (item): item is Record<string, unknown> =>
-        isRecord(item) && isRecord(item.notes) && item.notes.operatornestIdempotencyKey === key,
+        isRecord(item) &&
+        isRecord(item.notes) &&
+        item.notes.operatornestIdempotencyKey === idempotencyKey,
     );
     if (found) return found;
     if (items.length < pageSize) break;

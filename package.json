@@ -75,13 +75,11 @@
     "test": "vitest run --coverage",
     "test:watch": "vitest",
     "smoke": "node scripts/smoke.mjs",
-    "test:coverage": "vitest run --coverage --coverage.reporter=text",
-    "check": "pnpm fmt:check && pnpm build && pnpm lint && pnpm typecheck && pnpm knip && pnpm check:source && pnpm test",
+    "check": "pnpm fmt:check && pnpm build && pnpm lint && pnpm typecheck && pnpm knip && node scripts/check-source.mjs && pnpm test",
     "changeset": "changeset",
     "e2e:env": "node scripts/with-local-lock.mjs node scripts/e2e-env.mjs",
     "e2e": "node scripts/e2e.mjs",
-    "knip": "knip --no-progress",
-    "check:source": "node scripts/check-source.mjs"
+    "knip": "knip --no-progress"
   },
   "devDependencies": {
     "@changesets/cli": "3.0.3",
@@ -90,6 +88,7 @@
     "@typescript/native": "npm:typescript@7.0.2",
     "@vitest/coverage-v8": "5.0.3",
     "convex": "1.46.0",
+    "convex-helpers": "0.1.128",
     "convex-test": "0.0.60",
     "knip": "6.40.0",
     "oxfmt": "0.72.0",
@@ -100,7 +99,8 @@
     "vitest": "5.0.3"
   },
   "peerDependencies": {
-    "convex": "^1.46.0"
+    "convex": "^1.46.0",
+    "convex-helpers": "^0.1.106"
   },
   "engines": {
     "node": ">=24"

@@ -42,10 +42,10 @@ const subscription = {
   status: "created",
 };
 
-function invalidArgument(run: () => unknown) {
+function invalidResponse(run: () => unknown) {
   expect(run).toThrowError(
     expect.objectContaining({
-      data: expect.objectContaining({ code: "RAZORPAY_INVALID_ARGUMENT" }),
+      data: expect.objectContaining({ code: "RAZORPAY_INVALID_RESPONSE" }),
     }),
   );
 }
@@ -61,10 +61,10 @@ describe("provider mapping optionals and authority checks", () => {
       [subscriptionFields, subscription],
     ] as const;
     for (const [parse, raw] of fixtures) {
-      invalidArgument(() => parse(null, now));
-      invalidArgument(() => parse({ ...raw, id: "" }, now));
-      invalidArgument(() => parse({ ...raw, id: raw.id.slice(0, raw.id.indexOf("_") + 1) }, now));
-      invalidArgument(() => parse(raw, -1));
+      invalidResponse(() => parse(null, now));
+      invalidResponse(() => parse({ ...raw, id: "" }, now));
+      invalidResponse(() => parse({ ...raw, id: raw.id.slice(0, raw.id.indexOf("_") + 1) }, now));
+      invalidResponse(() => parse(raw, -1));
     }
   });
 
@@ -74,7 +74,7 @@ describe("provider mapping optionals and authority checks", () => {
       amountDue: 1000,
       attempts: 0,
       createdAt: now,
-      updatedAtProvider: now,
+      providerUpdatedAt: now,
     });
     expect(
       orderFields({ ...order, status: "new_order", receipt: "", notes: [] }, now),
@@ -90,7 +90,7 @@ describe("provider mapping optionals and authority checks", () => {
       { ...order, receipt: 3 },
       { ...order, attempts: -1 },
     ])
-      invalidArgument(() => orderFields(raw, now));
+      invalidResponse(() => orderFields(raw, now));
   });
 
   test("payment retains valid optional provider fields and rejects contradictory authority", () => {
@@ -127,9 +127,9 @@ describe("provider mapping optionals and authority checks", () => {
       verified: false,
       amountRefunded: 200,
       refundStatus: "partial",
-      subscriptionId: "sub_1",
-      invoiceId: "inv_1",
-      customerId: "cust_1",
+      razorpaySubscriptionId: "sub_1",
+      razorpayInvoiceId: "inv_1",
+      razorpayCustomerId: "cust_1",
       fee: 20,
       tax: 4,
       errorCode: "E",
@@ -138,7 +138,7 @@ describe("provider mapping optionals and authority checks", () => {
       errorSource: "Source",
       errorStep: "Step",
       createdAt: 1_600_000_000_000,
-      updatedAtProvider: 1_600_000_001_000,
+      providerUpdatedAt: 1_600_000_001_000,
     });
     expect(paymentFields({ ...payment, status: "refunded" }, now).captured).toBe(true);
     expect(paymentFields({ ...payment, status: "new_state", captured: true }, now)).toMatchObject({
@@ -159,7 +159,7 @@ describe("provider mapping optionals and authority checks", () => {
       { ...payment, fee: -1 },
       { ...payment, tax: 1.2 },
     ])
-      invalidArgument(() => paymentFields(raw, now));
+      invalidResponse(() => paymentFields(raw, now));
   });
 
   test("refund, customer, and plan preserve valid optional fields", () => {
@@ -211,20 +211,20 @@ describe("provider mapping optionals and authority checks", () => {
       { ...refund, speed_requested: 1 },
       { ...refund, receipt: 1 },
     ])
-      invalidArgument(() => refundFields(raw, now));
+      invalidResponse(() => refundFields(raw, now));
     for (const raw of [
       { ...customer, name: 1 },
       { ...customer, email: 1 },
       { ...customer, contact: 1 },
       { ...customer, gstin: 1 },
     ])
-      invalidArgument(() => customerFields(raw, now));
+      invalidResponse(() => customerFields(raw, now));
     for (const raw of [
       { ...plan, period: "hourly" },
       { ...plan, period: "daily", interval: 1 },
       { ...plan, item: [] },
     ])
-      invalidArgument(() => planFields(raw, now));
+      invalidResponse(() => planFields(raw, now));
   });
 
   test("subscription validates counts, optional ids, times, and flags", () => {
@@ -250,17 +250,17 @@ describe("provider mapping optionals and authority checks", () => {
       now,
     );
     expect(rich).toMatchObject({
-      customerId: "cust_1",
+      razorpayCustomerId: "cust_1",
       quantity: 2,
       paidCount: 2,
       remainingCount: 10,
-      currentStart: 1000,
-      currentEnd: 2000,
+      currentStartAt: 1000,
+      currentEndAt: 2000,
       chargeAt: 3000,
       startAt: 4000,
       endAt: 5000,
       endedAt: 6000,
-      expireBy: 7000,
+      expiresAt: 7000,
       pausedAt: 8000,
       hasScheduledChanges: true,
     });
@@ -284,7 +284,7 @@ describe("provider mapping optionals and authority checks", () => {
       { ...subscription, has_scheduled_changes: "true" },
       { ...subscription, short_url: 1 },
     ])
-      invalidArgument(() => subscriptionFields(raw, now));
+      invalidResponse(() => subscriptionFields(raw, now));
   });
 
   test("collection requires an array no longer than the provider bound", () => {
@@ -295,6 +295,6 @@ describe("provider mapping optionals and authority checks", () => {
       { entity: "collection", items: {} },
       { entity: "collection", items: Array.from({ length: 1001 }) },
     ])
-      invalidArgument(() => collectionItems(raw));
+      invalidResponse(() => collectionItems(raw));
   });
 });

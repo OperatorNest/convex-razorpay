@@ -1,5 +1,6 @@
-import { sha256Hex } from "./crypto.js";
+import { computeSha256Hex } from "./crypto.js";
 import { razorpayError } from "./errors.js";
+
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -110,7 +111,7 @@ export async function deterministicTestId(
   prefix: string,
   parts: readonly (string | number | undefined)[],
 ): Promise<string> {
-  const digest = await sha256Hex(JSON.stringify(parts.map((part) => part ?? null)));
+  const digest = await computeSha256Hex(JSON.stringify(parts.map((part) => part ?? null)));
   return `${prefix}_test_${digest.slice(0, 20)}`;
 }
 

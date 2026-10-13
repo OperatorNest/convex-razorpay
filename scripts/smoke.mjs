@@ -239,30 +239,39 @@ try {
 
   console.log("2. Creating test-mode entities and reading mirrored state...");
   const setup = run("smoke:setup", { userId, runId });
-  check("customer getOrCreate", setup.customerId.startsWith("cust_"));
+  check("customer getOrCreate", setup.razorpayCustomerId.startsWith("cust_"));
   check("customer getOrCreate is stable", setup.sameCustomerOnRetry === true);
-  check("order created in test mode", setup.orderId.startsWith("order_") && setup.amount === 50000);
-  check("plan created", setup.planId.startsWith("plan_"));
-  check("subscription created", setup.subscriptionId.startsWith("sub_"));
+  check(
+    "order created in test mode",
+    setup.razorpayOrderId.startsWith("order_") && setup.amount === 50000,
+  );
+  check("plan created", setup.razorpayPlanId.startsWith("plan_"));
+  check("subscription created", setup.razorpaySubscriptionId.startsWith("sub_"));
   check("checkout options use configured key", setup.checkoutKeyIdPresent === true);
-  const before = run("smoke:state", { userId, orderId: setup.orderId });
-  check("customer mirror readable", before.customer?.razorpayId === setup.customerId);
+  const before = run("smoke:state", { userId, razorpayOrderId: setup.razorpayOrderId });
+  check(
+    "customer mirror readable",
+    before.customer?.razorpayCustomerId === setup.razorpayCustomerId,
+  );
   check(
     "order mirror readable",
     before.order?.status === "created" && before.order.amount === 50000,
   );
-  check("subscription mirror readable", before.subscription?.razorpayId === setup.subscriptionId);
+  check(
+    "subscription mirror readable",
+    before.subscription?.razorpaySubscriptionId === setup.razorpaySubscriptionId,
+  );
   check("no payments before the webhook", before.payments.length === 0);
 
-  const paymentId = `pay_${randomBytes(7).toString("hex")}`;
+  const razorpayPaymentId = `pay_${randomBytes(7).toString("hex")}`;
   const capturedBody = envelope(runId, {
-    id: paymentId,
+    id: razorpayPaymentId,
     entity: "payment",
     amount: setup.amount,
     currency: "INR",
     status: "captured",
     captured: true,
-    order_id: setup.orderId,
+    order_id: setup.razorpayOrderId,
     method: "upi",
   });
   const hook = `${await siteUrl()}/razorpay/webhook`;
@@ -278,11 +287,11 @@ try {
     (await post(hook, capturedBody, { ...sign(capturedBody), "x-razorpay-event-id": eventId })) ===
       200,
   );
-  const afterHook = run("smoke:state", { userId, orderId: setup.orderId });
+  const afterHook = run("smoke:state", { userId, razorpayOrderId: setup.razorpayOrderId });
   check(
     "webhook: payment mirror is captured",
     afterHook.payments.length === 1 &&
-      afterHook.payments[0].razorpayId === paymentId &&
+      afterHook.payments[0].razorpayPaymentId === razorpayPaymentId &&
       afterHook.payments[0].status === "captured",
   );
   check("webhook: onEvent callback ran once", countFor(eventId) === 1);
@@ -357,23 +366,23 @@ try {
     amount: setup.amount,
     currency: "INR",
     status: "mystery",
-    order_id: setup.orderId,
+    order_id: setup.razorpayOrderId,
   });
   check(
     "webhook: signed unexpected status returns 200",
     (await post(hook, odd, { ...sign(odd), "x-razorpay-event-id": oddId })) === 200,
   );
-  const afterOdd = run("smoke:state", { userId, orderId: setup.orderId });
+  const afterOdd = run("smoke:state", { userId, razorpayOrderId: setup.razorpayOrderId });
   check(
     "webhook: unexpected status is stored as unknown, never captured",
-    afterOdd.payments.find((p) => p.razorpayId === oddPaymentId)?.status === "unknown",
+    afterOdd.payments.find((p) => p.razorpayPaymentId === oddPaymentId)?.status === "unknown",
   );
 
-  const signature = hmac(keySecret, `${setup.orderId}|${paymentId}`);
+  const signature = hmac(keySecret, `${setup.razorpayOrderId}|${razorpayPaymentId}`);
   const verify = (sig, user = userId) =>
     run("smoke:verifyCheckout", {
-      orderId: setup.orderId,
-      paymentId,
+      razorpayOrderId: setup.razorpayOrderId,
+      razorpayPaymentId,
       signature: sig,
       userId: user,
     });
@@ -386,17 +395,17 @@ try {
     verified.ok === true && verified.verified,
     verified.error,
   );
-  const final = run("smoke:state", { userId, orderId: setup.orderId });
+  const final = run("smoke:state", { userId, razorpayOrderId: setup.razorpayOrderId });
   check(
     "verifyCheckout: payment mirror marked verified",
-    final.payments.find((p) => p.razorpayId === paymentId)?.verified === true,
+    final.payments.find((p) => p.razorpayPaymentId === razorpayPaymentId)?.verified === true,
   );
 
   console.log("3. Refunding, changing a subscription, paging, and cleaning up...");
-  const refund = run("smoke:refund", { paymentId, runId });
+  const refund = run("smoke:refund", { razorpayPaymentId, runId });
   check(
     "refund: test-mode refund created",
-    refund.refundId.startsWith("rfnd_") && refund.amount === 20000,
+    refund.razorpayRefundId.startsWith("rfnd_") && refund.amount === 20000,
   );
   check("refund: keyed retry reused the result", refund.stableOnRetry === true);
   check("refund: over-refund rejected with structured error", refund.overRefundRejected === true);
@@ -410,9 +419,9 @@ try {
     payload: {
       subscription: {
         entity: {
-          id: setup.subscriptionId,
+          id: setup.razorpaySubscriptionId,
           entity: "subscription",
-          plan_id: setup.planId,
+          plan_id: setup.razorpayPlanId,
           status: "active",
           quantity: 1,
           total_count: 12,
@@ -431,24 +440,35 @@ try {
       "x-razorpay-event-id": subscriptionEventId,
     })) === 200,
   );
-  const changes = run("smoke:changeSubscription", { subscriptionId: setup.subscriptionId });
+  const changes = run("smoke:changeSubscription", {
+    razorpaySubscriptionId: setup.razorpaySubscriptionId,
+  });
   check("subscription: pause applies", changes.paused === true);
   check("subscription: resume applies", changes.resumed === true);
   check("subscription: quantity update applies", changes.updated === true);
 
-  const pages = run("smoke:paginate", { runId });
+  const pages = run("smoke:paginate", {
+    runId,
+    userId,
+    razorpayOrderId: setup.razorpayOrderId,
+  });
   check(
     "paginated plan list returns distinct pages",
     pages.firstCount === 1 && pages.secondCount === 1 && pages.distinct === true,
   );
+  check("stored payment list returns distinct cursor pages", pages.paymentPages === true);
+  check("stored subscription list returns distinct cursor pages", pages.subscriptionPages === true);
   const cleanup = run("smoke:cleanup");
   check("cleanup preserves recent events", cleanup.removedRecent === 0);
-  const releasedClaims = runComponent("idempotency:cleanupScheduled");
-  check("cleanup preserves recent idempotency claims", releasedClaims === 0);
+  const releasedClaim = runComponent("plans:releaseIdempotency", {
+    idempotencyKey: `smoke-plan-${runId}`,
+  });
+  check("completed idempotency claims cannot be released", releasedClaim === false);
   const afterCleanup = run("smoke:setup", { userId, runId });
   check(
     "cleanup preserved keyed plan and subscription retries",
-    afterCleanup.planId === setup.planId && afterCleanup.subscriptionId === setup.subscriptionId,
+    afterCleanup.razorpayPlanId === setup.razorpayPlanId &&
+      afterCleanup.razorpaySubscriptionId === setup.razorpaySubscriptionId,
   );
   check(
     "cleanup preserved event deduplication",

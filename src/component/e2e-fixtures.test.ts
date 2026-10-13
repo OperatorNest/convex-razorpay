@@ -1,6 +1,6 @@
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { hmacSha256Hex, sha256Hex } from "../shared/crypto.js";
+import { computeHmacSha256Hex, computeSha256Hex } from "../shared/crypto.js";
 import { api } from "./_generated/api.js";
 import schema from "./schema.js";
 
@@ -43,9 +43,9 @@ describe("observed Razorpay webhook fixtures", () => {
         expect(Number.isSafeInteger(envelope.created_at), path).toBe(true);
 
         const body = JSON.stringify(fixture.body);
-        const bodyHash = await sha256Hex(body);
+        const bodyHash = await computeSha256Hex(body);
         const eventId = fixture.headers["x-razorpay-event-id"] ? "evt_redacted_fixture" : "";
-        const signature = await hmacSha256Hex("whsec_redacted_fixture_test", body);
+        const signature = await computeHmacSha256Hex("whsec_redacted_fixture_test", body);
         const t = convexTest(schema, modules);
         const first = await t.action(api.webhooks.ingest, { body, signature, eventId });
         expect(first.status, path).toBe(fixture.ingestStatus);

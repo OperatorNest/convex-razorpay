@@ -1,6 +1,6 @@
 import { makeFunctionReference } from "convex/server";
 import { stubRazorpayEnv, restoreRazorpayTestState } from "../../src/test-helpers.js";
-import { hmacSha256Hex } from "@operatornest/convex-razorpay";
+import { computeHmacSha256Hex } from "@operatornest/convex-razorpay";
 import { register } from "@operatornest/convex-razorpay/test";
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -22,13 +22,15 @@ afterEach(() => {
   restoreRazorpayTestState();
 });
 
-test("getForUser prefers an active subscription over a newer abandoned checkout", async () => {
+test("get prefers an active subscription over a newer abandoned checkout", async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(1_567_674_500_000);
   const t = convexTest(schema, modules);
   register(t);
   const active = await t.action(components.razorpay.subscriptions.create, {
-    planId: "plan_fixture",
+    quantity: 1,
+    customerNotify: true,
+    razorpayPlanId: "plan_fixture",
     totalCount: 12,
     userId: "user_returning",
     idempotencyKey: "active_subscription_key",
@@ -43,7 +45,7 @@ test("getForUser prefers an active subscription over a newer abandoned checkout"
     payload: {
       subscription: {
         entity: {
-          id: active.razorpayId,
+          id: active.razorpaySubscriptionId,
           entity: "subscription",
           plan_id: "plan_fixture",
           status: "active",
@@ -59,34 +61,36 @@ test("getForUser prefers an active subscription over a newer abandoned checkout"
   });
   await t.action(components.razorpay.webhooks.ingest, {
     body: envelope,
-    signature: await hmacSha256Hex("whsec_subscription_priority", envelope),
+    signature: await computeHmacSha256Hex("whsec_subscription_priority", envelope),
     eventId: "evt_subscription_priority",
   });
   vi.setSystemTime(1_567_674_502_000);
   const abandoned = await t.action(components.razorpay.subscriptions.create, {
-    planId: "plan_fixture",
+    quantity: 1,
+    customerNotify: true,
+    razorpayPlanId: "plan_fixture",
     totalCount: 12,
     userId: "user_returning",
     idempotencyKey: "abandoned_checkout_key",
     testMode: true,
   });
-  expect(abandoned.razorpayId).not.toBe(active.razorpayId);
+  expect(abandoned.razorpaySubscriptionId).not.toBe(active.razorpaySubscriptionId);
   expect(
-    (await t.query(components.razorpay.subscriptions.getForUser, { userId: "user_returning" }))
-      ?.razorpayId,
-  ).toBe(active.razorpayId);
+    (await t.query(components.razorpay.subscriptions.get, { userId: "user_returning" }))
+      ?.razorpaySubscriptionId,
+  ).toBe(active.razorpaySubscriptionId);
   expect(
     (
-      await t.query(components.razorpay.subscriptions.getForUser, {
+      await t.query(components.razorpay.subscriptions.get, {
         userId: "user_returning",
         statuses: ["created"],
       })
-    )?.razorpayId,
-  ).toBe(abandoned.razorpayId);
+    )?.razorpaySubscriptionId,
+  ).toBe(abandoned.razorpaySubscriptionId);
   await expect(
-    t.query(components.razorpay.subscriptions.getForUser, {
+    t.query(components.razorpay.subscriptions.get, {
       userId: "user_returning",
-      statuses: Array.from({ length: 21 }, (_, index) => `status_${index}`),
+      statuses: Array.from({ length: 21 }, () => "active" as const),
     }),
   ).rejects.toThrow("An argument is invalid, missing or out of bounds.");
 });
@@ -108,7 +112,7 @@ test("getOrCreate refreshes a user's customer profile and keeps omitted contact"
     testMode: true,
   });
   expect(refreshed).toMatchObject({
-    razorpayId: first.razorpayId,
+    razorpayCustomerId: first.razorpayCustomerId,
     name: "Alice Updated",
     email: "alice.updated@example.test",
     contact: "+919876543210",
@@ -135,7 +139,7 @@ test("keyed getOrCreate refreshes a same-owner profile and preserves omitted con
     testMode: true,
   });
   expect(updated).toMatchObject({
-    razorpayId: first.razorpayId,
+    razorpayCustomerId: first.razorpayCustomerId,
     name: "Alice Updated",
     email: "alice.updated@example.test",
     contact: "+919876543210",
@@ -200,17 +204,17 @@ test("subscription.charged webhook links payment to its subscription and invoice
     method: "POST",
     body,
     headers: {
-      "x-razorpay-signature": await hmacSha256Hex("whsec_subscription_fixture", body),
+      "x-razorpay-signature": await computeHmacSha256Hex("whsec_subscription_fixture", body),
       "x-razorpay-event-id": "evt_subscription_charged_fixture",
     },
   });
   expect(response.status).toBe(200);
-  const payments = await t.action(components.razorpay.payments.list, { testMode: true });
+  const payments = await t.action(components.razorpay.payments.fetchAll, { testMode: true });
   expect(
-    payments.find((payment) => payment.razorpayId === "pay_subscription_fixture"),
+    payments.find((payment) => payment.razorpayPaymentId === "pay_subscription_fixture"),
   ).toMatchObject({
-    subscriptionId: "sub_charged_fixture",
-    invoiceId: "inv_subscription_fixture",
+    razorpaySubscriptionId: "sub_charged_fixture",
+    razorpayInvoiceId: "inv_subscription_fixture",
   });
 });
 
@@ -227,11 +231,15 @@ test("authenticated app creates and reads a deterministic local order", async ()
   const bob = t.withIdentity({ tokenIdentifier: "test|bob" });
   const order = await alice.action(api.example.createOrder, { cartId: "cart-one" });
   expect(order).toMatchObject({ amount: 50000, currency: "INR" });
-  expect(order.orderId).toMatch(/^order_test_/);
-  expect(await alice.query(api.example.getOrder, { orderId: order.orderId })).toMatchObject({
+  expect(order.razorpayOrderId).toMatch(/^order_test_/);
+  expect(
+    await alice.query(api.example.getOrder, { razorpayOrderId: order.razorpayOrderId }),
+  ).toMatchObject({
     status: "created",
   });
-  expect(await bob.query(api.example.getOrder, { orderId: order.orderId })).toBeNull();
+  expect(
+    await bob.query(api.example.getOrder, { razorpayOrderId: order.razorpayOrderId }),
+  ).toBeNull();
   expect(fetch).not.toHaveBeenCalled();
 });
 
@@ -243,7 +251,7 @@ test("app rejects unauthenticated order creation and reads", async () => {
     data: { code: "APP_AUTH_REQUIRED", message: "Authentication is required." },
   });
   await expect(
-    t.query(api.example.getOrder, { orderId: "order_test_missing" }),
+    t.query(api.example.getOrder, { razorpayOrderId: "order_test_missing" }),
   ).rejects.toMatchObject({ data: { code: "APP_AUTH_REQUIRED" } });
 });
 
@@ -291,7 +299,7 @@ test("HTTP route verifies the raw body, then deduplicates a retry", async () => 
 test("callback invocation counter preserves one row and exposes each actual invocation", async () => {
   const t = convexTest(schema, modules);
   register(t);
-  const event = { eventId: "evt_direct_callback", event: "payment.failed", createdAtProvider: 1 };
+  const event = { eventId: "evt_direct_callback", event: "payment.failed", providerCreatedAt: 1 };
 
   await t.mutation(internal.webhookCallback.onEvent, event);
   await t.mutation(internal.webhookCallback.onEvent, event);
@@ -320,7 +328,7 @@ test("callback invocation counter upgrades a legacy row on the next invocation",
   await t.mutation(internal.webhookCallback.onEvent, {
     eventId: "evt_legacy_callback",
     event: "payment.failed",
-    createdAtProvider: 1,
+    providerCreatedAt: 1,
   });
 
   const row = await t.run((ctx) =>
@@ -354,7 +362,7 @@ test("callback failure rolls back entity, callback, and dedupe writes so Razorpa
       },
     },
   });
-  const callbackSignature = await hmacSha256Hex("whsec_test_secret_123", body);
+  const callbackSignature = await computeHmacSha256Hex("whsec_test_secret_123", body);
   await expect(
     t.action(ingestWithCallback, {
       body,
@@ -364,7 +372,7 @@ test("callback failure rolls back entity, callback, and dedupe writes so Razorpa
     }),
   ).rejects.toThrow("deliberate callback retry test");
   expect(await t.run((ctx) => ctx.db.query("webhookNotifications").take(5))).toHaveLength(0);
-  expect(await t.action(components.razorpay.payments.list, { testMode: true })).toHaveLength(0);
+  expect(await t.action(components.razorpay.payments.fetchAll, { testMode: true })).toHaveLength(0);
 
   expect(
     await t.action(ingestWithCallback, {
@@ -408,7 +416,7 @@ test("HTTP route acknowledges and records a correctly signed malformed payload",
     body,
     headers: {
       "x-razorpay-event-id": "evt_malformed",
-      "x-razorpay-signature": await hmacSha256Hex("whsec_test_secret_123", body),
+      "x-razorpay-signature": await computeHmacSha256Hex("whsec_test_secret_123", body),
     },
   });
   expect(response.status).toBe(200);
@@ -536,7 +544,7 @@ test("HTTP route records a signed unsupported event without callback", async () 
     body,
     headers: {
       "x-razorpay-event-id": "evt_ignored",
-      "x-razorpay-signature": await hmacSha256Hex("whsec_test_secret_123", body),
+      "x-razorpay-signature": await computeHmacSha256Hex("whsec_test_secret_123", body),
     },
   });
   expect(response.status).toBe(200);

@@ -2,6 +2,7 @@ import { stubRazorpayEnv, restoreRazorpayTestState } from "../test-helpers.js";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { isTestMode, requestProvider } from "./provider.js";
 import { isRazorpayError } from "../shared/errors.js";
+
 import { validatePage } from "./validators.js";
 
 beforeEach(() => {
@@ -79,11 +80,11 @@ const providerFailure = async (
 
 test("GET and POST failures expose status and uncertain outcomes", async () => {
   const get500 = await providerFailure("GET", 500, true);
-  expect(get500).toMatchObject({ data: { code: "RAZORPAY_HTTP_ERROR" } });
+  expect(get500).toMatchObject({ data: { code: "RAZORPAY_PROVIDER_ERROR" } });
   const post500 = await providerFailure("POST", 500, false);
-  expect(post500).toMatchObject({ data: { code: "RAZORPAY_HTTP_ERROR" } });
+  expect(post500).toMatchObject({ data: { code: "RAZORPAY_PROVIDER_ERROR" } });
   const get429 = await providerFailure("GET", 429, true);
-  expect(get429).toMatchObject({ data: { code: "RAZORPAY_HTTP_ERROR" } });
+  expect(get429).toMatchObject({ data: { code: "RAZORPAY_PROVIDER_ERROR" } });
   vi.stubGlobal(
     "fetch",
     vi.fn(async () => {
@@ -100,17 +101,17 @@ test("GET and POST failures expose status and uncertain outcomes", async () => {
 
 test("refund conflicts expose status without a retry recommendation", async () => {
   expect(await providerFailure("POST", 409, true, true)).toMatchObject({
-    data: { code: "RAZORPAY_HTTP_ERROR" },
+    data: { code: "RAZORPAY_PROVIDER_ERROR" },
   });
   expect(await providerFailure("POST", 409, false, true)).toMatchObject({
-    data: { code: "RAZORPAY_HTTP_ERROR" },
+    data: { code: "RAZORPAY_PROVIDER_ERROR" },
   });
 });
 
 test("malformed provider JSON has a structured error", async () => {
   vi.stubGlobal(
     "fetch",
-    vi.fn(async () => new Response("not json", { status: 502 })),
+    vi.fn(async () => new Response("not json", { status: 200 })),
   );
   await expect(requestProvider("GET", "/resource", { idempotent: true })).rejects.toMatchObject({
     data: { code: "RAZORPAY_INVALID_RESPONSE" },
@@ -160,7 +161,9 @@ test("test mode is explicit and missing either credential fails with a typed err
   } catch (error) {
     expect(isRazorpayError(error)).toBe(true);
     expect(error).toMatchObject({ data: { code: "RAZORPAY_NOT_CONFIGURED" } });
-    expect(error instanceof Error ? error.message : "").toMatch(/credentials are missing/i);
+    expect(error instanceof Error ? error.message : "").toMatch(
+      /configuration is missing or invalid/i,
+    );
   }
   vi.stubEnv("RAZORPAY_KEY_ID", "rzp_test_public");
   vi.stubEnv("RAZORPAY_KEY_SECRET", undefined);
@@ -223,4 +226,14 @@ test("request timer covers response parsing and is cleared on success or program
   circular.self = circular;
   await expect(requestProvider("POST", "/resource", { body: circular })).rejects.toThrow();
   expect(vi.getTimerCount()).toBe(0);
+});
+
+test("a failed provider response with malformed JSON remains a provider error", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => new Response("not json", { status: 502 })),
+  );
+  await expect(requestProvider("GET", "/resource")).rejects.toMatchObject({
+    data: { code: "RAZORPAY_PROVIDER_ERROR", providerStatus: 502, retryable: true },
+  });
 });

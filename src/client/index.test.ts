@@ -2,7 +2,7 @@ import { httpRouter } from "convex/server";
 import { ConvexError } from "convex/values";
 import { describe, expect, expectTypeOf, test, vi } from "vitest";
 import { components, internal } from "../../example/convex/_generated/api.js";
-import { Razorpay, checkoutOptions, isRazorpayError, registerRoutes } from "./index.js";
+import { Razorpay, buildCheckoutOptions, isRazorpayError, registerRoutes } from "./index.js";
 
 vi.mock("convex/server", async (importOriginal) => ({
   ...(await importOriginal<typeof import("convex/server")>()),
@@ -11,9 +11,10 @@ vi.mock("convex/server", async (importOriginal) => ({
 
 function mockContext() {
   return {
-    runAction: vi
-      .fn()
-      .mockResolvedValue({ order: { razorpayId: "order_1" }, keyId: "rzp_test_public" }),
+    runAction: vi.fn().mockResolvedValue({
+      order: { _id: "row_1", _creationTime: 1, razorpayOrderId: "order_1" },
+      keyId: "rzp_test_public",
+    }),
     runQuery: vi.fn().mockResolvedValue(null),
     runMutation: vi.fn().mockResolvedValue(1),
   };
@@ -22,67 +23,100 @@ function mockContext() {
 test("every public client method delegates to its component function", async () => {
   const client = new Razorpay(components.razorpay, { testMode: true });
   const ctx = mockContext();
+  ctx.runQuery
+    .mockResolvedValueOnce(null)
+    .mockResolvedValueOnce({ page: [], isDone: true, continueCursor: "" })
+    .mockResolvedValueOnce(null)
+    .mockResolvedValueOnce(null)
+    .mockResolvedValueOnce({ page: [], isDone: true, continueCursor: "" });
 
-  expect(await client.orders.create(ctx, { amount: 50000, currency: "INR" })).toMatchObject({
-    razorpayId: "order_1",
+  expect(
+    await client.orders.create(ctx, { partialPayment: false, amount: 50000, currency: "INR" }),
+  ).toMatchObject({
+    razorpayOrderId: "order_1",
     keyId: "rzp_test_public",
   });
-  await client.orders.fetch(ctx, { orderId: "order_1" });
-  await client.orders.fetchPayments(ctx, { orderId: "order_1" });
-  await client.orders.get(ctx, { orderId: "order_1" });
-  await client.payments.fetch(ctx, { paymentId: "pay_1" });
-  await client.payments.capture(ctx, { paymentId: "pay_1", amount: 50000, currency: "INR" });
-  await client.payments.list(ctx, {});
-  await client.payments.listForOrder(ctx, { orderId: "order_1" });
-  await client.refunds.create(ctx, { paymentId: "pay_1", receipt: "refund-1" });
-  await client.refunds.fetch(ctx, { refundId: "rfnd_1" });
+  await client.orders.fetch(ctx, { razorpayOrderId: "order_1" });
+  await client.orders.fetchPayments(ctx, { razorpayOrderId: "order_1" });
+  await client.orders.get(ctx, { razorpayOrderId: "order_1" });
+  await client.payments.fetch(ctx, { razorpayPaymentId: "pay_1" });
+  await client.payments.capture(ctx, {
+    razorpayPaymentId: "pay_1",
+    amount: 50000,
+    currency: "INR",
+  });
+  await client.payments.fetchAll(ctx, {});
+  await client.payments.list(ctx, {
+    paginationOpts: { numItems: 100, cursor: null },
+    razorpayOrderId: "order_1",
+  });
+  await client.refunds.create(ctx, {
+    speed: "normal",
+    amount: 100,
+    razorpayPaymentId: "pay_1",
+    receipt: "refund-1",
+  });
+  await client.refunds.fetch(ctx, { razorpayRefundId: "rfnd_1" });
   await client.customers.create(ctx, { name: "A", email: "a@example.test" });
   await client.customers.getOrCreate(ctx, { name: "A", email: "a@example.test" });
-  await client.customers.fetch(ctx, { customerId: "cust_1" });
-  await client.customers.edit(ctx, { customerId: "cust_1", name: "B" });
-  await client.customers.getByUser(ctx, { userId: "user_1" });
+  await client.customers.fetch(ctx, { razorpayCustomerId: "cust_1" });
+  await client.customers.edit(ctx, { razorpayCustomerId: "cust_1", name: "B" });
+  await client.customers.get(ctx, { userId: "user_1" });
   await client.plans.create(ctx, {
     period: "monthly",
     interval: 1,
     item: { name: "Plan", amount: 50000, currency: "INR" },
   });
-  await client.plans.fetch(ctx, { planId: "plan_1" });
-  await client.plans.list(ctx, {});
-  await client.subscriptions.create(ctx, { planId: "plan_1", totalCount: 12 });
-  await client.subscriptions.fetch(ctx, { subscriptionId: "sub_1" });
-  await client.subscriptions.cancel(ctx, { subscriptionId: "sub_1" });
-  await client.subscriptions.pause(ctx, { subscriptionId: "sub_1" });
-  await client.subscriptions.resume(ctx, { subscriptionId: "sub_1" });
-  await client.subscriptions.update(ctx, { subscriptionId: "sub_1", quantity: 2 });
-  await client.subscriptions.getForUser(ctx, { userId: "user_1" });
-  await client.subscriptions.listByUser(ctx, { userId: "user_1" });
-  await client.verification.checkout(ctx, {
-    orderId: "order_1",
-    paymentId: "pay_1",
+  await client.plans.fetch(ctx, { razorpayPlanId: "plan_1" });
+  await client.plans.fetchAll(ctx, {});
+  await client.subscriptions.create(ctx, {
+    quantity: 1,
+    customerNotify: true,
+    razorpayPlanId: "plan_1",
+    totalCount: 12,
+  });
+  await client.subscriptions.fetch(ctx, { razorpaySubscriptionId: "sub_1" });
+  await client.subscriptions.cancel(ctx, { razorpaySubscriptionId: "sub_1" });
+  await client.subscriptions.cancelAtCycleEnd(ctx, { razorpaySubscriptionId: "sub_1" });
+  await client.subscriptions.pause(ctx, { razorpaySubscriptionId: "sub_1" });
+  await client.subscriptions.resume(ctx, { razorpaySubscriptionId: "sub_1" });
+  await client.subscriptions.update(ctx, {
+    scheduleChangeAt: "now",
+    razorpaySubscriptionId: "sub_1",
+    quantity: 2,
+  });
+  await client.subscriptions.get(ctx, { userId: "user_1" });
+  await client.subscriptions.list(ctx, {
+    paginationOpts: { numItems: 100, cursor: null },
+    userId: "user_1",
+  });
+  await client.orders.verifyCheckout(ctx, {
+    razorpayOrderId: "order_1",
+    razorpayPaymentId: "pay_1",
     signature: "sig",
   });
-  await client.verification.subscriptionCheckout(ctx, {
-    subscriptionId: "sub_1",
-    paymentId: "pay_1",
+  await client.subscriptions.verifyCheckout(ctx, {
+    razorpaySubscriptionId: "sub_1",
+    razorpayPaymentId: "pay_1",
     signature: "sig",
   });
-  await client.verification.paymentLink(ctx, {
-    paymentLinkId: "plink_1",
+  await client.paymentLinks.verifyCheckout(ctx, {
+    razorpayPaymentLinkId: "plink_1",
     referenceId: "ref_1",
     status: "paid",
-    paymentId: "pay_1",
+    razorpayPaymentId: "pay_1",
     signature: "sig",
   });
-  await client.webhooks.cleanup(ctx, {});
-  await client.idempotency.release(ctx, { resource: "plan", key: "key_1" });
+  await client.orders.releaseIdempotency(ctx, { idempotencyKey: "key_1" });
+  await client.subscriptions.releaseIdempotency(ctx, { idempotencyKey: "key_1" });
+  await client.plans.releaseIdempotency(ctx, { idempotencyKey: "key_1" });
   expect(ctx.runMutation.mock.calls.at(-1)?.[1]).toEqual({
-    resource: "plan",
-    key: "key_1",
+    idempotencyKey: "key_1",
     testMode: true,
   });
   expect(
-    checkoutOptions(
-      { razorpayId: "order_1", amount: 50000, currency: "INR", keyId: "rzp_test_public" },
+    buildCheckoutOptions(
+      { razorpayOrderId: "order_1", amount: 50000, currency: "INR", keyId: "rzp_test_public" },
       { name: "Demo" },
     ),
   ).toEqual({
@@ -99,7 +133,7 @@ test("every public client method delegates to its component function", async () 
     components.razorpay.orders.fetchPayments,
     components.razorpay.payments.fetch,
     components.razorpay.payments.capture,
-    components.razorpay.payments.list,
+    components.razorpay.payments.fetchAll,
     components.razorpay.refunds.create,
     components.razorpay.refunds.fetch,
     components.razorpay.customers.create,
@@ -108,16 +142,17 @@ test("every public client method delegates to its component function", async () 
     components.razorpay.customers.edit,
     components.razorpay.plans.create,
     components.razorpay.plans.fetch,
-    components.razorpay.plans.list,
+    components.razorpay.plans.fetchAll,
     components.razorpay.subscriptions.create,
     components.razorpay.subscriptions.fetch,
     components.razorpay.subscriptions.cancel,
+    components.razorpay.subscriptions.cancelAtCycleEnd,
     components.razorpay.subscriptions.pause,
     components.razorpay.subscriptions.resume,
     components.razorpay.subscriptions.update,
-    components.razorpay.verification.checkout,
-    components.razorpay.verification.subscriptionCheckout,
-    components.razorpay.verification.paymentLink,
+    components.razorpay.orders.verifyCheckout,
+    components.razorpay.subscriptions.verifyCheckout,
+    components.razorpay.paymentLinks.verifyCheckout,
   ];
   expect(ctx.runAction.mock.calls.map(([ref]) => ref)).toEqual(actionRefs);
   expect(ctx.runAction.mock.calls.slice(0, -1).every(([, args]) => args.testMode === true)).toBe(
@@ -126,23 +161,26 @@ test("every public client method delegates to its component function", async () 
   expect(ctx.runAction.mock.calls.at(-1)?.[1]).not.toHaveProperty("testMode");
   expect(ctx.runQuery.mock.calls.map(([ref]) => ref)).toEqual([
     components.razorpay.orders.get,
-    components.razorpay.payments.listForOrder,
-    components.razorpay.customers.getByUser,
-    components.razorpay.subscriptions.getForUser,
-    components.razorpay.subscriptions.listByUser,
+    components.razorpay.payments.list,
+    components.razorpay.customers.get,
+    components.razorpay.subscriptions.get,
+    components.razorpay.subscriptions.list,
   ]);
   expect(ctx.runMutation.mock.calls.map(([ref]) => ref)).toEqual([
-    components.razorpay.webhooks.cleanup,
-    components.razorpay.idempotency.release,
+    components.razorpay.orders.releaseIdempotency,
+    components.razorpay.subscriptions.releaseIdempotency,
+    components.razorpay.plans.releaseIdempotency,
   ]);
 });
 
 test("undefined test mode is omitted and a missing Checkout key stays absent", async () => {
   const client = new Razorpay(components.razorpay);
   const ctx = mockContext();
-  await client.orders.fetch(ctx, { orderId: "order_1" });
+  await client.orders.fetch(ctx, { razorpayOrderId: "order_1" });
   expect(ctx.runAction.mock.calls[0]?.[1]).not.toHaveProperty("testMode");
-  expect(checkoutOptions({ razorpayId: "order_1", amount: 50000, currency: "INR" })).toEqual({
+  expect(
+    buildCheckoutOptions({ razorpayOrderId: "order_1", amount: 50000, currency: "INR" }),
+  ).toEqual({
     order_id: "order_1",
     amount: 50000,
     currency: "INR",
@@ -151,8 +189,8 @@ test("undefined test mode is omitted and a missing Checkout key stays absent", a
 
 test("typed Razorpay errors retain their ConvexError data", async () => {
   const error = new ConvexError({
-    code: "RAZORPAY_PROVIDER_REJECTED",
-    message: "Rejected",
+    code: "RAZORPAY_PROVIDER_ERROR",
+    message: "Razorpay returned a failure response.",
   });
   expect(isRazorpayError(error)).toBe(true);
   expect(isRazorpayError(new ConvexError({ code: "OTHER", message: "Other" }))).toBe(false);
@@ -166,10 +204,10 @@ test("typed Razorpay errors retain their ConvexError data", async () => {
   const client = new Razorpay(components.razorpay);
   const ctx = mockContext();
   ctx.runAction.mockRejectedValueOnce(error);
-  await expect(client.orders.fetch(ctx, { orderId: "order_1" })).rejects.toBe(error);
+  await expect(client.orders.fetch(ctx, { razorpayOrderId: "order_1" })).rejects.toBe(error);
   const unexpected = new Error("Network unavailable");
   ctx.runAction.mockRejectedValueOnce(unexpected);
-  await expect(client.orders.fetch(ctx, { orderId: "order_1" })).rejects.toBe(unexpected);
+  await expect(client.orders.fetch(ctx, { razorpayOrderId: "order_1" })).rejects.toBe(unexpected);
 });
 
 test("testMode is excluded from public call arguments at the type boundary", () => {
@@ -180,7 +218,7 @@ test("testMode is excluded from public call arguments at the type boundary", () 
   expectTypeOf<Parameters<typeof client.customers.create>[1]>().not.toHaveProperty("testMode");
   expectTypeOf<Parameters<typeof client.plans.create>[1]>().not.toHaveProperty("testMode");
   expectTypeOf<Parameters<typeof client.subscriptions.create>[1]>().not.toHaveProperty("testMode");
-  expectTypeOf<Parameters<typeof client.verification.checkout>[1]>().not.toHaveProperty("testMode");
+  expectTypeOf<Parameters<typeof client.orders.verifyCheckout>[1]>().not.toHaveProperty("testMode");
 });
 
 function routeHandler(
@@ -311,11 +349,14 @@ describe("registered webhook route", () => {
     const handler = routeHandler();
     const ctx = mockContext();
     ctx.runAction.mockRejectedValueOnce(
-      new ConvexError({ code: "RAZORPAY_INVALID_WEBHOOK_SIGNATURE", message: "Invalid" }),
+      new ConvexError({
+        code: "RAZORPAY_INVALID_WEBHOOK_SIGNATURE",
+        message: "The webhook signature is invalid.",
+      }),
     );
     expect((await invokeRoute(handler, ctx, request())).status).toBe(401);
     ctx.runAction.mockRejectedValueOnce(
-      new ConvexError({ code: "RAZORPAY_HTTP_ERROR", message: "Unavailable" }),
+      new ConvexError({ code: "RAZORPAY_PROVIDER_ERROR", message: "Unavailable" }),
     );
     expect((await invokeRoute(handler, ctx, request())).status).toBe(500);
   });
@@ -323,10 +364,10 @@ describe("registered webhook route", () => {
 
 test("undeclared caller testMode never reaches component arguments", async () => {
   const ctx = mockContext();
-  ctx.runAction.mockResolvedValueOnce({ order: { razorpayId: "order_fixture" } });
+  ctx.runAction.mockResolvedValueOnce({ order: { razorpayOrderId: "order_fixture" } });
   const client = new Razorpay(components.razorpay);
   const args = { amount: 1000, currency: "INR", testMode: true };
-  await client.orders.create(ctx, args);
+  await client.orders.create(ctx, { partialPayment: false, ...args });
   expect(ctx.runAction.mock.calls[0]?.[1]?.testMode).toBeUndefined();
 });
 

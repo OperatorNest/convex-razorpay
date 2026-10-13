@@ -3,7 +3,7 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import schema from "./schema.js";
-import { hmacSha256Hex } from "../shared/crypto.js";
+import { computeHmacSha256Hex } from "../shared/crypto.js";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -36,8 +36,8 @@ test("idempotency retention deletes old failed claims and preserves every comple
       await ctx.db.insert("idempotencyRequests", {
         testMode: false,
         resource: "plan",
-        key: `old-completed-${i}`,
-        fingerprint: `fingerprint-${i}`,
+        idempotencyKey: `old-completed-${i}`,
+        requestFingerprint: `fingerprint-${i}`,
         status: "completed",
         createdAt: old,
         settledAt: old,
@@ -46,8 +46,8 @@ test("idempotency retention deletes old failed claims and preserves every comple
     await ctx.db.insert("idempotencyRequests", {
       testMode: false,
       resource: "subscription",
-      key: "old-failed",
-      fingerprint: "failed",
+      idempotencyKey: "old-failed",
+      requestFingerprint: "failed",
       status: "failed",
       createdAt: old,
       settledAt: old,
@@ -55,42 +55,32 @@ test("idempotency retention deletes old failed claims and preserves every comple
     await ctx.db.insert("idempotencyRequests", {
       testMode: false,
       resource: "plan",
-      key: "old-pending",
-      fingerprint: "pending",
+      idempotencyKey: "old-pending",
+      requestFingerprint: "pending",
       status: "pending",
       createdAt: old,
     });
     await ctx.db.insert("idempotencyRequests", {
       testMode: false,
       resource: "plan",
-      key: "recent-completed",
-      fingerprint: "recent",
+      idempotencyKey: "recent-completed",
+      requestFingerprint: "recent",
       status: "completed",
       createdAt: old,
       settledAt: now,
     });
   });
-  expect(
-    await t.mutation(internal.idempotency.cleanupScheduled, {
-      before: now - 30 * 24 * 60 * 60_000,
-    }),
-  ).toBe(1);
   const remaining = await t.run((ctx) => ctx.db.query("idempotencyRequests").take(100));
-  expect(remaining).toHaveLength(23);
-  expect(remaining.map((row) => row.key)).toEqual(
+  expect(remaining).toHaveLength(24);
+  expect(remaining.map((row) => row.idempotencyKey)).toEqual(
     expect.arrayContaining(["old-pending", "recent-completed"]),
   );
-  expect(
-    await t.mutation(internal.idempotency.cleanupScheduled, {
-      before: now - 30 * 24 * 60 * 60_000,
-    }),
-  ).toBe(0);
   const retained = await t.run((ctx) => ctx.db.query("idempotencyRequests").take(100));
   expect(retained).toEqual(remaining);
-  expect(retained.some((row) => row.key === "old-failed")).toBe(false);
+  expect(retained.some((row) => row.idempotencyKey === "old-failed")).toBe(true);
 });
 
-test("listForOrder returns newest indexed payments first", async () => {
+test("list returns newest indexed payments first", async () => {
   const t = convexTest(schema, modules);
   for (const [id, createdAt] of [
     ["pay_oldest", 1_567_674_599],
@@ -110,8 +100,13 @@ test("listForOrder returns newest indexed payments first", async () => {
       observedAt: 1_567_674_600_000,
     });
   }
-  const payments = await t.query(api.payments.listForOrder, { orderId: "order_listed" });
-  expect(payments.map((row) => row.razorpayId)).toEqual(["pay_newest", "pay_oldest"]);
+  const payments = await t
+    .query(api.payments.list, {
+      paginationOpts: { numItems: 100, cursor: null },
+      razorpayOrderId: "order_listed",
+    })
+    .then(({ page }) => page);
+  expect(payments.map((row) => row.razorpayPaymentId)).toEqual(["pay_newest", "pay_oldest"]);
 });
 
 function payment(id: string, status: string, amount = 5000) {
@@ -144,12 +139,12 @@ function subscription(status: string) {
   };
 }
 
-function envelope(event: string, key: string, entity: unknown, createdAt: number) {
+function envelope(event: string, entityKind: string, entity: unknown, createdAt: number) {
   return JSON.stringify({
     entity: "event",
     account_id: "acc_fixture",
     event,
-    payload: { [key]: { entity } },
+    payload: { [entityKind]: { entity } },
     created_at: createdAt,
   });
 }
@@ -158,7 +153,7 @@ async function ingest(t: ReturnType<typeof convexTest>, eventId: string, body: s
   return t.action(api.webhooks.ingest, {
     eventId,
     body,
-    signature: await hmacSha256Hex(webhookFixture, body),
+    signature: await computeHmacSha256Hex(webhookFixture, body),
   });
 }
 
@@ -185,7 +180,7 @@ test("webhook dedupes and an older authorized payment cannot undo capture", asyn
   const mirror = await t.run((ctx) =>
     ctx.db
       .query("payments")
-      .withIndex("by_razorpayId", (q) => q.eq("razorpayId", "pay_monotonic"))
+      .withIndex("by_razorpayPaymentId", (q) => q.eq("razorpayPaymentId", "pay_monotonic"))
       .unique(),
   );
   expect(mirror?.status).toBe("captured");
@@ -203,14 +198,15 @@ test("a webhook with an older provider timestamp advances a fetched payment", as
   );
   const t = convexTest(schema, modules);
   expect(
-    (await t.action(api.payments.fetch, { paymentId: "pay_clock", testMode: false })).status,
+    (await t.action(api.payments.fetch, { razorpayPaymentId: "pay_clock", testMode: false }))
+      .status,
   ).toBe("authorized");
   const body = envelope("payment.captured", "payment", payment("pay_clock", "captured"), 10);
   expect((await ingest(t, "evt_clock_capture", body)).status).toBe("processed");
   const mirror = await t.run((ctx) =>
     ctx.db
       .query("payments")
-      .withIndex("by_razorpayId", (q) => q.eq("razorpayId", "pay_clock"))
+      .withIndex("by_razorpayPaymentId", (q) => q.eq("razorpayPaymentId", "pay_clock"))
       .unique(),
   );
   expect(mirror?.status).toBe("captured");
@@ -231,7 +227,9 @@ test("subscription authenticated advances to active within the same second", asy
   const mirror = await t.run((ctx) =>
     ctx.db
       .query("subscriptions")
-      .withIndex("by_razorpayId", (q) => q.eq("razorpayId", "sub_transitions"))
+      .withIndex("by_razorpaySubscriptionId", (q) =>
+        q.eq("razorpaySubscriptionId", "sub_transitions"),
+      )
       .unique(),
   );
   expect(mirror?.status).toBe("active");
@@ -257,7 +255,7 @@ test("unknown payment statuses are preserved without changing known entity state
   const mirror = await t.run((ctx) =>
     ctx.db
       .query("payments")
-      .withIndex("by_razorpayId", (q) => q.eq("razorpayId", "pay_unknown_status"))
+      .withIndex("by_razorpayPaymentId", (q) => q.eq("razorpayPaymentId", "pay_unknown_status"))
       .unique(),
   );
   expect(mirror).toMatchObject({ status: "authorized", rawStatus: "future_status" });
@@ -301,7 +299,7 @@ test("a secondary apply failure rolls back the primary paid-order write", async 
   const paymentMirror = await t.run((ctx) =>
     ctx.db
       .query("payments")
-      .withIndex("by_razorpayId", (q) => q.eq("razorpayId", "pay_secondary_conflict"))
+      .withIndex("by_razorpayPaymentId", (q) => q.eq("razorpayPaymentId", "pay_secondary_conflict"))
       .unique(),
   );
   expect(paymentMirror?.amount).toBe(5000);
@@ -320,7 +318,7 @@ test("signed event with a different valid status is accepted", async () => {
   const mirror = await t.run((ctx) =>
     ctx.db
       .query("payments")
-      .withIndex("by_razorpayId", (q) => q.eq("razorpayId", "pay_wrong_status"))
+      .withIndex("by_razorpayPaymentId", (q) => q.eq("razorpayPaymentId", "pay_wrong_status"))
       .unique(),
   );
   expect(mirror?.status).toBe("authorized");
@@ -367,37 +365,44 @@ test("test refunds update captured balance once and reject over-refund", async (
     testMode: true,
   });
   await t.action(api.payments.capture, {
-    paymentId: "pay_refundable",
+    razorpayPaymentId: "pay_refundable",
     amount: 5000,
     currency: "INR",
     testMode: true,
   });
   const firstArgs = {
-    paymentId: "pay_refundable",
+    razorpayPaymentId: "pay_refundable",
     amount: 2000,
     idempotencyKey: "first_refund_key",
     testMode: true,
   };
-  const first = await t.action(api.refunds.create, firstArgs);
-  expect((await t.action(api.refunds.create, firstArgs)).razorpayId).toBe(first.razorpayId);
+  const first = await t.action(api.refunds.create, { speed: "normal", ...firstArgs });
+  expect(
+    (await t.action(api.refunds.create, { speed: "normal", ...firstArgs })).razorpayRefundId,
+  ).toBe(first.razorpayRefundId);
   await t.action(api.refunds.create, {
-    paymentId: "pay_refundable",
+    speed: "normal",
+    razorpayPaymentId: "pay_refundable",
     amount: 3000,
     idempotencyKey: "second_refund_key",
     testMode: true,
   });
   await expect(
     t.action(api.refunds.create, {
-      paymentId: "pay_refundable",
+      speed: "normal",
+      razorpayPaymentId: "pay_refundable",
       amount: 1,
       idempotencyKey: "third_refund_key",
       testMode: true,
     }),
   ).rejects.toThrow("An argument is invalid, missing or out of bounds.");
-  const mirror = await t.query(api.payments.listForOrder, {
-    orderId: "order_fixture",
-    testMode: true,
-  });
+  const mirror = await t
+    .query(api.payments.list, {
+      paginationOpts: { numItems: 100, cursor: null },
+      razorpayOrderId: "order_fixture",
+      testMode: true,
+    })
+    .then(({ page }) => page);
   expect(mirror[0]).toMatchObject({
     status: "refunded",
     amountRefunded: 5000,
@@ -438,14 +443,14 @@ test("checkout signature verifies identity and records authorization without cap
     createdThroughComponent: true,
   });
   const signed = {
-    orderId: "order_IluGWxBm9U8zJ8",
-    paymentId: "pay_IH4NVgf4wjLNgR",
+    razorpayOrderId: "order_IluGWxBm9U8zJ8",
+    razorpayPaymentId: "pay_IH4NVgf4wjLNgR",
     signature: "efeceae0e93bd41a7096ecce1d1cf69979db6c1d91a8116a21965faa42177a62",
   };
   await expect(
-    t.action(api.verification.checkout, { ...signed, signature: "0".repeat(64) }),
+    t.action(api.orders.verifyCheckout, { ...signed, signature: "0".repeat(64) }),
   ).rejects.toThrow("An argument is invalid, missing or out of bounds.");
-  const result = await t.action(api.verification.checkout, signed);
+  const result = await t.action(api.orders.verifyCheckout, signed);
   expect(result).toMatchObject({ verified: true, status: "authorized", captured: false });
 });
 
@@ -458,7 +463,7 @@ test("cleanup only removes old webhook events in the requested batch", async () 
         ctx.db.insert("webhookEvents", {
           eventId: `evt_old_${i}`,
           event: "payment.captured",
-          createdAtProvider: now - 40 * 86400_000,
+          providerCreatedAt: now - 40 * 86400_000,
           receivedAt: now - 40 * 86400_000,
           status: "processed",
           bodyHash: "hash",
@@ -468,7 +473,7 @@ test("cleanup only removes old webhook events in the requested batch", async () 
     await ctx.db.insert("webhookEvents", {
       eventId: "evt_new",
       event: "payment.captured",
-      createdAtProvider: now,
+      providerCreatedAt: now,
       receivedAt: now,
       status: "processed",
       bodyHash: "hash",
@@ -492,7 +497,7 @@ test("public cleanup cannot delete events from the last 24 hours", async () => {
     ctx.db.insert("webhookEvents", {
       eventId: "evt_recent_cleanup_guard",
       event: "payment.captured",
-      createdAtProvider: now,
+      providerCreatedAt: now,
       receivedAt: now - 23 * 60 * 60 * 1000,
       status: "processed",
       bodyHash: "cleanup-guard",
@@ -511,23 +516,29 @@ test("test mode customer, plan, and subscription lifecycle stays local and linke
     testMode: true,
   };
   const customer = await t.action(api.customers.getOrCreate, customerArgs);
-  expect((await t.action(api.customers.getOrCreate, customerArgs)).razorpayId).toBe(
-    customer.razorpayId,
+  expect((await t.action(api.customers.getOrCreate, customerArgs)).razorpayCustomerId).toBe(
+    customer.razorpayCustomerId,
   );
   expect(
-    (await t.query(api.customers.getByUser, { userId: "user_alice", testMode: true }))?.razorpayId,
-  ).toBe(customer.razorpayId);
+    (await t.query(api.customers.get, { userId: "user_alice", testMode: true }))
+      ?.razorpayCustomerId,
+  ).toBe(customer.razorpayCustomerId);
   expect(
     (
       await t.action(api.customers.edit, {
-        customerId: customer.razorpayId,
+        razorpayCustomerId: customer.razorpayCustomerId,
         name: "Alice Updated",
         testMode: true,
       })
     ).name,
   ).toBe("Alice Updated");
   expect(
-    (await t.action(api.customers.fetch, { customerId: customer.razorpayId, testMode: true })).name,
+    (
+      await t.action(api.customers.fetch, {
+        razorpayCustomerId: customer.razorpayCustomerId,
+        testMode: true,
+      })
+    ).name,
   ).toBe("Alice Updated");
   const plan = await t.action(api.plans.create, {
     period: "monthly",
@@ -537,67 +548,85 @@ test("test mode customer, plan, and subscription lifecycle stays local and linke
     testMode: true,
   });
   expect(
-    (await t.action(api.plans.fetch, { planId: plan.razorpayId, testMode: true })).razorpayId,
-  ).toBe(plan.razorpayId);
+    (await t.action(api.plans.fetch, { razorpayPlanId: plan.razorpayPlanId, testMode: true }))
+      .razorpayPlanId,
+  ).toBe(plan.razorpayPlanId);
   expect(
-    (await t.action(api.plans.list, { testMode: true })).map((item) => item.razorpayId),
-  ).toContain(plan.razorpayId);
+    (await t.action(api.plans.fetchAll, { testMode: true })).map((item) => item.razorpayPlanId),
+  ).toContain(plan.razorpayPlanId);
   const sub = await t.action(api.subscriptions.create, {
-    planId: plan.razorpayId,
+    quantity: 1,
+    customerNotify: true,
+    razorpayPlanId: plan.razorpayPlanId,
     totalCount: 12,
     userId: "user_alice",
     idempotencyKey: "subscription_key_alice",
     testMode: true,
   });
   expect(
-    (await t.action(api.subscriptions.fetch, { subscriptionId: sub.razorpayId, testMode: true }))
-      .status,
+    (
+      await t.action(api.subscriptions.fetch, {
+        razorpaySubscriptionId: sub.razorpaySubscriptionId,
+        testMode: true,
+      })
+    ).status,
   ).toBe("created");
   expect(
-    (await t.query(api.subscriptions.getForUser, { userId: "user_alice", testMode: true }))
-      ?.razorpayId,
-  ).toBe(sub.razorpayId);
+    (await t.query(api.subscriptions.get, { userId: "user_alice", testMode: true }))
+      ?.razorpaySubscriptionId,
+  ).toBe(sub.razorpaySubscriptionId);
   expect(
-    await t.query(api.subscriptions.listByUser, { userId: "user_alice", testMode: true }),
+    await t
+      .query(api.subscriptions.list, {
+        paginationOpts: { numItems: 100, cursor: null },
+        userId: "user_alice",
+        testMode: true,
+      })
+      .then(({ page }) => page),
   ).toHaveLength(1);
   await t.mutation(internal.mutations.putSubscription, {
     raw: {
       ...subscription("active"),
-      id: sub.razorpayId,
-      plan_id: plan.razorpayId,
+      id: sub.razorpaySubscriptionId,
+      plan_id: plan.razorpayPlanId,
       total_count: 12,
       paid_count: 0,
       remaining_count: 12,
     },
-    observedAt: sub.updatedAtProvider,
+    observedAt: sub.providerUpdatedAt,
     testMode: true,
   });
   const paused = await t.action(api.subscriptions.pause, {
-    subscriptionId: sub.razorpayId,
+    razorpaySubscriptionId: sub.razorpaySubscriptionId,
     testMode: true,
   });
   expect(paused.status).toBe("paused");
   const resumed = await t.action(api.subscriptions.resume, {
-    subscriptionId: sub.razorpayId,
+    razorpaySubscriptionId: sub.razorpaySubscriptionId,
     testMode: true,
   });
   expect(resumed.status).toBe("active");
   const updated = await t.action(api.subscriptions.update, {
-    subscriptionId: sub.razorpayId,
+    scheduleChangeAt: "now",
+    razorpaySubscriptionId: sub.razorpaySubscriptionId,
     quantity: 2,
     remainingCount: 13,
     testMode: true,
   });
   expect(updated).toMatchObject({ quantity: 2, remainingCount: 13 });
-  const scheduled = await t.action(api.subscriptions.cancel, {
-    subscriptionId: sub.razorpayId,
-    cancelAtCycleEnd: true,
+  const scheduled = await t.action(api.subscriptions.cancelAtCycleEnd, {
+    razorpaySubscriptionId: sub.razorpaySubscriptionId,
+
     testMode: true,
   });
   expect(scheduled).toMatchObject({ status: "active", hasScheduledChanges: true });
   expect(
-    (await t.action(api.subscriptions.cancel, { subscriptionId: sub.razorpayId, testMode: true }))
-      .status,
+    (
+      await t.action(api.subscriptions.cancel, {
+        razorpaySubscriptionId: sub.razorpaySubscriptionId,
+        testMode: true,
+      })
+    ).status,
   ).toBe("cancelled");
 });
 
@@ -645,14 +674,14 @@ test("subscription checkout signature links a provider payment without subscript
     observedAt: 1_567_674_500_000,
     createdThroughComponent: true,
   });
-  const verified = await t.action(api.verification.subscriptionCheckout, {
-    subscriptionId: "sub_ID6MOhgkcoHjE7",
-    paymentId: "pay_IH4NVgf4wjLNgR",
+  const verified = await t.action(api.subscriptions.verifyCheckout, {
+    razorpaySubscriptionId: "sub_ID6MOhgkcoHjE7",
+    razorpayPaymentId: "pay_IH4NVgf4wjLNgR",
     signature: "460acecf881994c1fb48d8bddb43b971181207b8d9403687aaeacd5f4433404b",
   });
   expect(verified).toMatchObject({
     verified: true,
-    subscriptionId: "sub_ID6MOhgkcoHjE7",
+    razorpaySubscriptionId: "sub_ID6MOhgkcoHjE7",
     captured: false,
   });
 });

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
-  constantTimeEqualHex,
-  hmacSha256Hex,
+  compareHexSignatures,
+  computeHmacSha256Hex,
   verifyHmacSha256Hex,
   verifyOrderCheckout,
   verifyPaymentLinkCallback,
@@ -19,7 +19,7 @@ const rawBody =
 describe("fixed HMAC-SHA256 fixtures", () => {
   test("order checkout", async () => {
     expect(
-      await hmacSha256Hex(testOnlySigningSecret, "order_IluGWxBm9U8zJ8|pay_IH4NVgf4wjLNgR"),
+      await computeHmacSha256Hex(testOnlySigningSecret, "order_IluGWxBm9U8zJ8|pay_IH4NVgf4wjLNgR"),
     ).toBe(order);
     expect(
       await verifyOrderCheckout(
@@ -41,7 +41,7 @@ describe("fixed HMAC-SHA256 fixtures", () => {
 
   test("subscription checkout uses payment id first", async () => {
     expect(
-      await hmacSha256Hex(testOnlySigningSecret, "pay_IH4NVgf4wjLNgR|sub_ID6MOhgkcoHjE7"),
+      await computeHmacSha256Hex(testOnlySigningSecret, "pay_IH4NVgf4wjLNgR|sub_ID6MOhgkcoHjE7"),
     ).toBe(subscription);
     expect(
       await verifySubscriptionCheckout(
@@ -63,7 +63,7 @@ describe("fixed HMAC-SHA256 fixtures", () => {
 
   test("payment link callback including empty reference", async () => {
     expect(
-      await hmacSha256Hex(
+      await computeHmacSha256Hex(
         testOnlySigningSecret,
         "plink_ID6MOhgkcoHjE7|inv-001|paid|pay_IH4NVgf4wjLNgR",
       ),
@@ -78,7 +78,7 @@ describe("fixed HMAC-SHA256 fixtures", () => {
         link,
       ),
     ).toBe(true);
-    const emptyReference = await hmacSha256Hex(
+    const emptyReference = await computeHmacSha256Hex(
       testOnlySigningSecret,
       "plink_ID6MOhgkcoHjE7||paid|pay_IH4NVgf4wjLNgR",
     );
@@ -95,15 +95,15 @@ describe("fixed HMAC-SHA256 fixtures", () => {
   });
 
   test("webhook body must be exact raw text", async () => {
-    expect(await hmacSha256Hex("whsec_test_secret_123", rawBody)).toBe(webhook);
+    expect(await computeHmacSha256Hex("whsec_test_secret_123", rawBody)).toBe(webhook);
     expect(await verifyHmacSha256Hex("whsec_test_secret_123", rawBody, webhook)).toBe(true);
     expect(await verifyHmacSha256Hex("whsec_test_secret_123", rawBody + "\n", webhook)).toBe(false);
   });
 
   test("rejects malformed, truncated, and altered hex", () => {
-    expect(constantTimeEqualHex(order, order)).toBe(true);
-    expect(constantTimeEqualHex(order, order.slice(0, -1))).toBe(false);
-    expect(constantTimeEqualHex(order, "z" + order.slice(1))).toBe(false);
-    expect(constantTimeEqualHex(order, "0" + order.slice(1))).toBe(false);
+    expect(compareHexSignatures(order, order)).toBe(true);
+    expect(compareHexSignatures(order, order.slice(0, -1))).toBe(false);
+    expect(compareHexSignatures(order, "z" + order.slice(1))).toBe(false);
+    expect(compareHexSignatures(order, "0" + order.slice(1))).toBe(false);
   });
 });

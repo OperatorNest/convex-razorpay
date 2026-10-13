@@ -51,11 +51,11 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           metadata?: Record<string, string>;
           name?: string;
           notes: Record<string, string>;
+          providerUpdatedAt: number;
           raw: any;
-          razorpayId: string;
+          razorpayCustomerId: string;
           requestFingerprint?: string;
           testMode: boolean;
-          updatedAtProvider: number;
           userId?: string;
         },
         Name
@@ -65,9 +65,9 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         {
           contact?: string;
-          customerId: string;
           email?: string;
           name?: string;
+          razorpayCustomerId: string;
           testMode?: boolean;
         },
         {
@@ -82,11 +82,11 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           metadata?: Record<string, string>;
           name?: string;
           notes: Record<string, string>;
+          providerUpdatedAt: number;
           raw: any;
-          razorpayId: string;
+          razorpayCustomerId: string;
           requestFingerprint?: string;
           testMode: boolean;
-          updatedAtProvider: number;
           userId?: string;
         },
         Name
@@ -94,10 +94,8 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       fetch: FunctionReference<
         "action",
         "internal",
-        { customerId: string; testMode?: boolean },
+        { razorpayCustomerId: string; testMode?: boolean },
         {
-          _creationTime: number;
-          _id: string;
           contact?: string;
           createdAt: number;
           email?: string;
@@ -107,16 +105,16 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           metadata?: Record<string, string>;
           name?: string;
           notes: Record<string, string>;
+          providerUpdatedAt: number;
           raw: any;
-          razorpayId: string;
+          razorpayCustomerId: string;
           requestFingerprint?: string;
           testMode: boolean;
-          updatedAtProvider: number;
           userId?: string;
         },
         Name
       >;
-      getByUser: FunctionReference<
+      get: FunctionReference<
         "query",
         "internal",
         { testMode?: boolean; userId: string },
@@ -132,11 +130,11 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           metadata?: Record<string, string>;
           name?: string;
           notes: Record<string, string>;
+          providerUpdatedAt: number;
           raw: any;
-          razorpayId: string;
+          razorpayCustomerId: string;
           requestFingerprint?: string;
           testMode: boolean;
-          updatedAtProvider: number;
           userId?: string;
         } | null,
         Name
@@ -168,26 +166,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           metadata?: Record<string, string>;
           name?: string;
           notes: Record<string, string>;
+          providerUpdatedAt: number;
           raw: any;
-          razorpayId: string;
+          razorpayCustomerId: string;
           requestFingerprint?: string;
           testMode: boolean;
-          updatedAtProvider: number;
           userId?: string;
         },
-        Name
-      >;
-    };
-    idempotency: {
-      release: FunctionReference<
-        "mutation",
-        "internal",
-        {
-          key: string;
-          resource: "order" | "plan" | "subscription";
-          testMode?: boolean;
-        },
-        boolean,
         Name
       >;
     };
@@ -202,7 +187,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           idempotencyKey?: string;
           metadata?: Record<string, string>;
           notes?: Record<string, string>;
-          partialPayment?: boolean;
+          partialPayment: boolean;
           receipt?: string;
           testMode?: boolean;
           userId?: string;
@@ -224,13 +209,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             metadata?: Record<string, string>;
             notes: Record<string, string>;
             partialPayment: boolean;
+            providerUpdatedAt: number;
             raw: any;
             rawStatus?: string;
-            razorpayId: string;
+            razorpayOrderId: string;
             receipt?: string;
-            status: string;
+            status: "created" | "attempted" | "paid" | "unknown";
             testMode: boolean;
-            updatedAtProvider: number;
             userId?: string;
           };
         },
@@ -239,10 +224,8 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       fetch: FunctionReference<
         "action",
         "internal",
-        { orderId: string; testMode?: boolean },
+        { razorpayOrderId: string; testMode?: boolean },
         {
-          _creationTime: number;
-          _id: string;
           amount: number;
           amountDue: number;
           amountPaid: number;
@@ -255,13 +238,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           metadata?: Record<string, string>;
           notes: Record<string, string>;
           partialPayment: boolean;
+          providerUpdatedAt: number;
           raw: any;
           rawStatus?: string;
-          razorpayId: string;
+          razorpayOrderId: string;
           receipt?: string;
-          status: string;
+          status: "created" | "attempted" | "paid" | "unknown";
           testMode: boolean;
-          updatedAtProvider: number;
           userId?: string;
         },
         Name
@@ -269,17 +252,14 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       fetchPayments: FunctionReference<
         "action",
         "internal",
-        { orderId: string; testMode?: boolean },
+        { razorpayOrderId: string; testMode?: boolean },
         Array<{
-          _creationTime: number;
-          _id: string;
           amount: number;
           amountRefunded: number;
           captured: boolean;
           contact?: string;
           createdAt: number;
           currency: string;
-          customerId?: string;
           email?: string;
           errorCode?: string;
           errorDescription?: string;
@@ -289,19 +269,26 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           externalId?: string;
           fee?: number;
           international?: boolean;
-          invoiceId?: string;
           method?: string;
           notes: Record<string, string>;
-          orderId?: string;
+          providerUpdatedAt: number;
           raw: any;
           rawStatus?: string;
-          razorpayId: string;
-          refundStatus?: string;
-          status: string;
-          subscriptionId?: string;
+          razorpayCustomerId?: string;
+          razorpayInvoiceId?: string;
+          razorpayOrderId?: string;
+          razorpayPaymentId: string;
+          razorpaySubscriptionId?: string;
+          refundStatus?: "partial" | "full";
+          status:
+            | "created"
+            | "authorized"
+            | "captured"
+            | "refunded"
+            | "failed"
+            | "unknown";
           tax?: number;
           testMode: boolean;
-          updatedAtProvider: number;
           userId?: string;
           verified: boolean;
         }>,
@@ -310,7 +297,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       get: FunctionReference<
         "query",
         "internal",
-        { orderId: string; testMode?: boolean },
+        { razorpayOrderId: string; testMode?: boolean },
         {
           _creationTime: number;
           _id: string;
@@ -326,15 +313,91 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           metadata?: Record<string, string>;
           notes: Record<string, string>;
           partialPayment: boolean;
+          providerUpdatedAt: number;
           raw: any;
           rawStatus?: string;
-          razorpayId: string;
+          razorpayOrderId: string;
           receipt?: string;
-          status: string;
+          status: "created" | "attempted" | "paid" | "unknown";
           testMode: boolean;
-          updatedAtProvider: number;
           userId?: string;
         } | null,
+        Name
+      >;
+      releaseIdempotency: FunctionReference<
+        "mutation",
+        "internal",
+        { idempotencyKey: string; testMode?: boolean },
+        boolean,
+        Name
+      >;
+      verifyCheckout: FunctionReference<
+        "action",
+        "internal",
+        {
+          razorpayOrderId: string;
+          razorpayPaymentId: string;
+          signature: string;
+          testMode?: boolean;
+          userId?: string;
+        },
+        {
+          _creationTime: number;
+          _id: string;
+          amount: number;
+          amountRefunded: number;
+          captured: boolean;
+          contact?: string;
+          createdAt: number;
+          currency: string;
+          email?: string;
+          errorCode?: string;
+          errorDescription?: string;
+          errorReason?: string;
+          errorSource?: string;
+          errorStep?: string;
+          externalId?: string;
+          fee?: number;
+          international?: boolean;
+          method?: string;
+          notes: Record<string, string>;
+          providerUpdatedAt: number;
+          raw: any;
+          rawStatus?: string;
+          razorpayCustomerId?: string;
+          razorpayInvoiceId?: string;
+          razorpayOrderId?: string;
+          razorpayPaymentId: string;
+          razorpaySubscriptionId?: string;
+          refundStatus?: "partial" | "full";
+          status:
+            | "created"
+            | "authorized"
+            | "captured"
+            | "refunded"
+            | "failed"
+            | "unknown";
+          tax?: number;
+          testMode: boolean;
+          userId?: string;
+          verified: boolean;
+        },
+        Name
+      >;
+    };
+    paymentLinks: {
+      verifyCheckout: FunctionReference<
+        "action",
+        "internal",
+        {
+          razorpayPaymentId: string;
+          razorpayPaymentLinkId: string;
+          referenceId: string;
+          signature: string;
+          status:
+            "created" | "partially_paid" | "paid" | "expired" | "cancelled";
+        },
+        true,
         Name
       >;
     };
@@ -345,7 +408,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         {
           amount: number;
           currency: string;
-          paymentId: string;
+          razorpayPaymentId: string;
           testMode?: boolean;
         },
         {
@@ -357,7 +420,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           contact?: string;
           createdAt: number;
           currency: string;
-          customerId?: string;
           email?: string;
           errorCode?: string;
           errorDescription?: string;
@@ -367,19 +429,26 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           externalId?: string;
           fee?: number;
           international?: boolean;
-          invoiceId?: string;
           method?: string;
           notes: Record<string, string>;
-          orderId?: string;
+          providerUpdatedAt: number;
           raw: any;
           rawStatus?: string;
-          razorpayId: string;
-          refundStatus?: string;
-          status: string;
-          subscriptionId?: string;
+          razorpayCustomerId?: string;
+          razorpayInvoiceId?: string;
+          razorpayOrderId?: string;
+          razorpayPaymentId: string;
+          razorpaySubscriptionId?: string;
+          refundStatus?: "partial" | "full";
+          status:
+            | "created"
+            | "authorized"
+            | "captured"
+            | "refunded"
+            | "failed"
+            | "unknown";
           tax?: number;
           testMode: boolean;
-          updatedAtProvider: number;
           userId?: string;
           verified: boolean;
         },
@@ -388,17 +457,14 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       fetch: FunctionReference<
         "action",
         "internal",
-        { paymentId: string; testMode?: boolean },
+        { razorpayPaymentId: string; testMode?: boolean },
         {
-          _creationTime: number;
-          _id: string;
           amount: number;
           amountRefunded: number;
           captured: boolean;
           contact?: string;
           createdAt: number;
           currency: string;
-          customerId?: string;
           email?: string;
           errorCode?: string;
           errorDescription?: string;
@@ -408,38 +474,42 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           externalId?: string;
           fee?: number;
           international?: boolean;
-          invoiceId?: string;
           method?: string;
           notes: Record<string, string>;
-          orderId?: string;
+          providerUpdatedAt: number;
           raw: any;
           rawStatus?: string;
-          razorpayId: string;
-          refundStatus?: string;
-          status: string;
-          subscriptionId?: string;
+          razorpayCustomerId?: string;
+          razorpayInvoiceId?: string;
+          razorpayOrderId?: string;
+          razorpayPaymentId: string;
+          razorpaySubscriptionId?: string;
+          refundStatus?: "partial" | "full";
+          status:
+            | "created"
+            | "authorized"
+            | "captured"
+            | "refunded"
+            | "failed"
+            | "unknown";
           tax?: number;
           testMode: boolean;
-          updatedAtProvider: number;
           userId?: string;
           verified: boolean;
         },
         Name
       >;
-      list: FunctionReference<
+      fetchAll: FunctionReference<
         "action",
         "internal",
         { count?: number; skip?: number; testMode?: boolean },
         Array<{
-          _creationTime: number;
-          _id: string;
           amount: number;
           amountRefunded: number;
           captured: boolean;
           contact?: string;
           createdAt: number;
           currency: string;
-          customerId?: string;
           email?: string;
           errorCode?: string;
           errorDescription?: string;
@@ -449,63 +519,91 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           externalId?: string;
           fee?: number;
           international?: boolean;
-          invoiceId?: string;
           method?: string;
           notes: Record<string, string>;
-          orderId?: string;
+          providerUpdatedAt: number;
           raw: any;
           rawStatus?: string;
-          razorpayId: string;
-          refundStatus?: string;
-          status: string;
-          subscriptionId?: string;
+          razorpayCustomerId?: string;
+          razorpayInvoiceId?: string;
+          razorpayOrderId?: string;
+          razorpayPaymentId: string;
+          razorpaySubscriptionId?: string;
+          refundStatus?: "partial" | "full";
+          status:
+            | "created"
+            | "authorized"
+            | "captured"
+            | "refunded"
+            | "failed"
+            | "unknown";
           tax?: number;
           testMode: boolean;
-          updatedAtProvider: number;
           userId?: string;
           verified: boolean;
         }>,
         Name
       >;
-      listForOrder: FunctionReference<
+      list: FunctionReference<
         "query",
         "internal",
-        { limit?: number; orderId: string; testMode?: boolean },
-        Array<{
-          _creationTime: number;
-          _id: string;
-          amount: number;
-          amountRefunded: number;
-          captured: boolean;
-          contact?: string;
-          createdAt: number;
-          currency: string;
-          customerId?: string;
-          email?: string;
-          errorCode?: string;
-          errorDescription?: string;
-          errorReason?: string;
-          errorSource?: string;
-          errorStep?: string;
-          externalId?: string;
-          fee?: number;
-          international?: boolean;
-          invoiceId?: string;
-          method?: string;
-          notes: Record<string, string>;
-          orderId?: string;
-          raw: any;
-          rawStatus?: string;
-          razorpayId: string;
-          refundStatus?: string;
-          status: string;
-          subscriptionId?: string;
-          tax?: number;
-          testMode: boolean;
-          updatedAtProvider: number;
-          userId?: string;
-          verified: boolean;
-        }>,
+        {
+          paginationOpts: {
+            cursor: string | null;
+            endCursor?: string | null;
+            id?: number;
+            maximumBytesRead?: number;
+            maximumRowsRead?: number;
+            numItems: number;
+          };
+          razorpayOrderId: string;
+          testMode?: boolean;
+        },
+        {
+          continueCursor: string;
+          isDone: boolean;
+          page: Array<{
+            _creationTime: number;
+            _id: string;
+            amount: number;
+            amountRefunded: number;
+            captured: boolean;
+            contact?: string;
+            createdAt: number;
+            currency: string;
+            email?: string;
+            errorCode?: string;
+            errorDescription?: string;
+            errorReason?: string;
+            errorSource?: string;
+            errorStep?: string;
+            externalId?: string;
+            fee?: number;
+            international?: boolean;
+            method?: string;
+            notes: Record<string, string>;
+            providerUpdatedAt: number;
+            raw: any;
+            rawStatus?: string;
+            razorpayCustomerId?: string;
+            razorpayInvoiceId?: string;
+            razorpayOrderId?: string;
+            razorpayPaymentId: string;
+            razorpaySubscriptionId?: string;
+            refundStatus?: "partial" | "full";
+            status:
+              | "created"
+              | "authorized"
+              | "captured"
+              | "refunded"
+              | "failed"
+              | "unknown";
+            tax?: number;
+            testMode: boolean;
+            userId?: string;
+            verified: boolean;
+          }>;
+        },
         Name
       >;
     };
@@ -543,10 +641,10 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           metadata?: Record<string, string>;
           notes: Record<string, string>;
           period: string;
+          providerUpdatedAt: number;
           raw: any;
-          razorpayId: string;
+          razorpayPlanId: string;
           testMode: boolean;
-          updatedAtProvider: number;
           userId?: string;
         },
         Name
@@ -554,10 +652,8 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       fetch: FunctionReference<
         "action",
         "internal",
-        { planId: string; testMode?: boolean },
+        { razorpayPlanId: string; testMode?: boolean },
         {
-          _creationTime: number;
-          _id: string;
           amount: number;
           createdAt: number;
           currency: string;
@@ -569,21 +665,19 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           metadata?: Record<string, string>;
           notes: Record<string, string>;
           period: string;
+          providerUpdatedAt: number;
           raw: any;
-          razorpayId: string;
+          razorpayPlanId: string;
           testMode: boolean;
-          updatedAtProvider: number;
           userId?: string;
         },
         Name
       >;
-      list: FunctionReference<
+      fetchAll: FunctionReference<
         "action",
         "internal",
         { count?: number; skip?: number; testMode?: boolean },
         Array<{
-          _creationTime: number;
-          _id: string;
           amount: number;
           createdAt: number;
           currency: string;
@@ -595,12 +689,19 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           metadata?: Record<string, string>;
           notes: Record<string, string>;
           period: string;
+          providerUpdatedAt: number;
           raw: any;
-          razorpayId: string;
+          razorpayPlanId: string;
           testMode: boolean;
-          updatedAtProvider: number;
           userId?: string;
         }>,
+        Name
+      >;
+      releaseIdempotency: FunctionReference<
+        "mutation",
+        "internal",
+        { idempotencyKey: string; testMode?: boolean },
+        boolean,
         Name
       >;
     };
@@ -609,14 +710,14 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "action",
         "internal",
         {
-          amount?: number;
+          amount: number;
           externalId?: string;
           idempotencyKey?: string;
           metadata?: Record<string, string>;
           notes?: Record<string, string>;
-          paymentId: string;
+          razorpayPaymentId: string;
           receipt?: string;
-          speed?: "normal" | "optimum";
+          speed: "normal" | "optimum";
           testMode?: boolean;
           userId?: string;
         },
@@ -630,17 +731,17 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           idempotencyKey?: string;
           metadata?: Record<string, string>;
           notes: Record<string, string>;
-          paymentId: string;
+          providerUpdatedAt: number;
           raw: any;
           rawStatus?: string;
-          razorpayId: string;
+          razorpayPaymentId: string;
+          razorpayRefundId: string;
           receipt?: string;
           requestFingerprint?: string;
           speedProcessed?: string;
           speedRequested?: string;
-          status: string;
+          status: "pending" | "processed" | "failed" | "unknown";
           testMode: boolean;
-          updatedAtProvider: number;
           userId?: string;
         },
         Name
@@ -648,10 +749,8 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       fetch: FunctionReference<
         "action",
         "internal",
-        { refundId: string; testMode?: boolean },
+        { razorpayRefundId: string; testMode?: boolean },
         {
-          _creationTime: number;
-          _id: string;
           amount: number;
           createdAt: number;
           currency: string;
@@ -659,17 +758,17 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           idempotencyKey?: string;
           metadata?: Record<string, string>;
           notes: Record<string, string>;
-          paymentId: string;
+          providerUpdatedAt: number;
           raw: any;
           rawStatus?: string;
-          razorpayId: string;
+          razorpayPaymentId: string;
+          razorpayRefundId: string;
           receipt?: string;
           requestFingerprint?: string;
           speedProcessed?: string;
           speedRequested?: string;
-          status: string;
+          status: "pending" | "processed" | "failed" | "unknown";
           testMode: boolean;
-          updatedAtProvider: number;
           userId?: string;
         },
         Name
@@ -679,43 +778,99 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       cancel: FunctionReference<
         "action",
         "internal",
-        {
-          cancelAtCycleEnd?: boolean;
-          subscriptionId: string;
-          testMode?: boolean;
-        },
+        { razorpaySubscriptionId: string; testMode?: boolean },
         {
           _creationTime: number;
           _id: string;
           chargeAt?: number;
           createdAt: number;
           createdThroughComponent?: boolean;
-          currentEnd?: number;
-          currentStart?: number;
-          customerId?: string;
+          currentEndAt?: number;
+          currentStartAt?: number;
           endAt?: number;
           endedAt?: number;
-          expireBy?: number;
+          expiresAt?: number;
           externalId?: string;
           hasScheduledChanges: boolean;
           idempotencyKey?: string;
-          lastWebhookCreatedAtProvider?: number;
+          lastWebhookAt?: number;
           metadata?: Record<string, string>;
           notes: Record<string, string>;
           paidCount: number;
           pausedAt?: number;
-          planId: string;
+          providerUpdatedAt: number;
           quantity: number;
           raw: any;
           rawStatus?: string;
-          razorpayId: string;
+          razorpayCustomerId?: string;
+          razorpayPlanId: string;
+          razorpaySubscriptionId: string;
           remainingCount: number;
           shortUrl?: string;
           startAt?: number;
-          status: string;
+          status:
+            | "created"
+            | "authenticated"
+            | "active"
+            | "pending"
+            | "halted"
+            | "paused"
+            | "cancelled"
+            | "completed"
+            | "expired"
+            | "unknown";
           testMode: boolean;
           totalCount: number;
-          updatedAtProvider: number;
+          userId?: string;
+        },
+        Name
+      >;
+      cancelAtCycleEnd: FunctionReference<
+        "action",
+        "internal",
+        { razorpaySubscriptionId: string; testMode?: boolean },
+        {
+          _creationTime: number;
+          _id: string;
+          chargeAt?: number;
+          createdAt: number;
+          createdThroughComponent?: boolean;
+          currentEndAt?: number;
+          currentStartAt?: number;
+          endAt?: number;
+          endedAt?: number;
+          expiresAt?: number;
+          externalId?: string;
+          hasScheduledChanges: boolean;
+          idempotencyKey?: string;
+          lastWebhookAt?: number;
+          metadata?: Record<string, string>;
+          notes: Record<string, string>;
+          paidCount: number;
+          pausedAt?: number;
+          providerUpdatedAt: number;
+          quantity: number;
+          raw: any;
+          rawStatus?: string;
+          razorpayCustomerId?: string;
+          razorpayPlanId: string;
+          razorpaySubscriptionId: string;
+          remainingCount: number;
+          shortUrl?: string;
+          startAt?: number;
+          status:
+            | "created"
+            | "authenticated"
+            | "active"
+            | "pending"
+            | "halted"
+            | "paused"
+            | "cancelled"
+            | "completed"
+            | "expired"
+            | "unknown";
+          testMode: boolean;
+          totalCount: number;
           userId?: string;
         },
         Name
@@ -724,15 +879,15 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "action",
         "internal",
         {
-          customerNotify?: boolean;
-          expireBy?: number;
+          customerNotify: boolean;
+          expiresAt?: number;
           externalId?: string;
           idempotencyKey?: string;
           metadata?: Record<string, string>;
           notes?: Record<string, string>;
-          offerId?: string;
-          planId: string;
-          quantity?: number;
+          quantity: number;
+          razorpayOfferId?: string;
+          razorpayPlanId: string;
           startAt?: number;
           testMode?: boolean;
           totalCount: number;
@@ -744,32 +899,42 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           chargeAt?: number;
           createdAt: number;
           createdThroughComponent?: boolean;
-          currentEnd?: number;
-          currentStart?: number;
-          customerId?: string;
+          currentEndAt?: number;
+          currentStartAt?: number;
           endAt?: number;
           endedAt?: number;
-          expireBy?: number;
+          expiresAt?: number;
           externalId?: string;
           hasScheduledChanges: boolean;
           idempotencyKey?: string;
-          lastWebhookCreatedAtProvider?: number;
+          lastWebhookAt?: number;
           metadata?: Record<string, string>;
           notes: Record<string, string>;
           paidCount: number;
           pausedAt?: number;
-          planId: string;
+          providerUpdatedAt: number;
           quantity: number;
           raw: any;
           rawStatus?: string;
-          razorpayId: string;
+          razorpayCustomerId?: string;
+          razorpayPlanId: string;
+          razorpaySubscriptionId: string;
           remainingCount: number;
           shortUrl?: string;
           startAt?: number;
-          status: string;
+          status:
+            | "created"
+            | "authenticated"
+            | "active"
+            | "pending"
+            | "halted"
+            | "paused"
+            | "cancelled"
+            | "completed"
+            | "expired"
+            | "unknown";
           testMode: boolean;
           totalCount: number;
-          updatedAtProvider: number;
           userId?: string;
         },
         Name
@@ -777,199 +942,284 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       fetch: FunctionReference<
         "action",
         "internal",
-        { subscriptionId: string; testMode?: boolean },
+        { razorpaySubscriptionId: string; testMode?: boolean },
         {
-          _creationTime: number;
-          _id: string;
           chargeAt?: number;
           createdAt: number;
           createdThroughComponent?: boolean;
-          currentEnd?: number;
-          currentStart?: number;
-          customerId?: string;
+          currentEndAt?: number;
+          currentStartAt?: number;
           endAt?: number;
           endedAt?: number;
-          expireBy?: number;
+          expiresAt?: number;
           externalId?: string;
           hasScheduledChanges: boolean;
           idempotencyKey?: string;
-          lastWebhookCreatedAtProvider?: number;
+          lastWebhookAt?: number;
           metadata?: Record<string, string>;
           notes: Record<string, string>;
           paidCount: number;
           pausedAt?: number;
-          planId: string;
+          providerUpdatedAt: number;
           quantity: number;
           raw: any;
           rawStatus?: string;
-          razorpayId: string;
+          razorpayCustomerId?: string;
+          razorpayPlanId: string;
+          razorpaySubscriptionId: string;
           remainingCount: number;
           shortUrl?: string;
           startAt?: number;
-          status: string;
+          status:
+            | "created"
+            | "authenticated"
+            | "active"
+            | "pending"
+            | "halted"
+            | "paused"
+            | "cancelled"
+            | "completed"
+            | "expired"
+            | "unknown";
           testMode: boolean;
           totalCount: number;
-          updatedAtProvider: number;
           userId?: string;
         },
         Name
       >;
-      getForUser: FunctionReference<
+      get: FunctionReference<
         "query",
         "internal",
-        { statuses?: Array<string>; testMode?: boolean; userId: string },
+        {
+          statuses?: Array<
+            | "created"
+            | "authenticated"
+            | "active"
+            | "pending"
+            | "halted"
+            | "paused"
+            | "cancelled"
+            | "completed"
+            | "expired"
+            | "unknown"
+          >;
+          testMode?: boolean;
+          userId: string;
+        },
         {
           _creationTime: number;
           _id: string;
           chargeAt?: number;
           createdAt: number;
           createdThroughComponent?: boolean;
-          currentEnd?: number;
-          currentStart?: number;
-          customerId?: string;
+          currentEndAt?: number;
+          currentStartAt?: number;
           endAt?: number;
           endedAt?: number;
-          expireBy?: number;
+          expiresAt?: number;
           externalId?: string;
           hasScheduledChanges: boolean;
           idempotencyKey?: string;
-          lastWebhookCreatedAtProvider?: number;
+          lastWebhookAt?: number;
           metadata?: Record<string, string>;
           notes: Record<string, string>;
           paidCount: number;
           pausedAt?: number;
-          planId: string;
+          providerUpdatedAt: number;
           quantity: number;
           raw: any;
           rawStatus?: string;
-          razorpayId: string;
+          razorpayCustomerId?: string;
+          razorpayPlanId: string;
+          razorpaySubscriptionId: string;
           remainingCount: number;
           shortUrl?: string;
           startAt?: number;
-          status: string;
+          status:
+            | "created"
+            | "authenticated"
+            | "active"
+            | "pending"
+            | "halted"
+            | "paused"
+            | "cancelled"
+            | "completed"
+            | "expired"
+            | "unknown";
           testMode: boolean;
           totalCount: number;
-          updatedAtProvider: number;
           userId?: string;
         } | null,
         Name
       >;
-      listByUser: FunctionReference<
+      list: FunctionReference<
         "query",
         "internal",
-        { limit?: number; testMode?: boolean; userId: string },
-        Array<{
-          _creationTime: number;
-          _id: string;
-          chargeAt?: number;
-          createdAt: number;
-          createdThroughComponent?: boolean;
-          currentEnd?: number;
-          currentStart?: number;
-          customerId?: string;
-          endAt?: number;
-          endedAt?: number;
-          expireBy?: number;
-          externalId?: string;
-          hasScheduledChanges: boolean;
-          idempotencyKey?: string;
-          lastWebhookCreatedAtProvider?: number;
-          metadata?: Record<string, string>;
-          notes: Record<string, string>;
-          paidCount: number;
-          pausedAt?: number;
-          planId: string;
-          quantity: number;
-          raw: any;
-          rawStatus?: string;
-          razorpayId: string;
-          remainingCount: number;
-          shortUrl?: string;
-          startAt?: number;
-          status: string;
-          testMode: boolean;
-          totalCount: number;
-          updatedAtProvider: number;
-          userId?: string;
-        }>,
+        {
+          paginationOpts: {
+            cursor: string | null;
+            endCursor?: string | null;
+            id?: number;
+            maximumBytesRead?: number;
+            maximumRowsRead?: number;
+            numItems: number;
+          };
+          testMode?: boolean;
+          userId: string;
+        },
+        {
+          continueCursor: string;
+          isDone: boolean;
+          page: Array<{
+            _creationTime: number;
+            _id: string;
+            chargeAt?: number;
+            createdAt: number;
+            createdThroughComponent?: boolean;
+            currentEndAt?: number;
+            currentStartAt?: number;
+            endAt?: number;
+            endedAt?: number;
+            expiresAt?: number;
+            externalId?: string;
+            hasScheduledChanges: boolean;
+            idempotencyKey?: string;
+            lastWebhookAt?: number;
+            metadata?: Record<string, string>;
+            notes: Record<string, string>;
+            paidCount: number;
+            pausedAt?: number;
+            providerUpdatedAt: number;
+            quantity: number;
+            raw: any;
+            rawStatus?: string;
+            razorpayCustomerId?: string;
+            razorpayPlanId: string;
+            razorpaySubscriptionId: string;
+            remainingCount: number;
+            shortUrl?: string;
+            startAt?: number;
+            status:
+              | "created"
+              | "authenticated"
+              | "active"
+              | "pending"
+              | "halted"
+              | "paused"
+              | "cancelled"
+              | "completed"
+              | "expired"
+              | "unknown";
+            testMode: boolean;
+            totalCount: number;
+            userId?: string;
+          }>;
+        },
         Name
       >;
       pause: FunctionReference<
         "action",
         "internal",
-        { subscriptionId: string; testMode?: boolean },
+        { razorpaySubscriptionId: string; testMode?: boolean },
         {
           _creationTime: number;
           _id: string;
           chargeAt?: number;
           createdAt: number;
           createdThroughComponent?: boolean;
-          currentEnd?: number;
-          currentStart?: number;
-          customerId?: string;
+          currentEndAt?: number;
+          currentStartAt?: number;
           endAt?: number;
           endedAt?: number;
-          expireBy?: number;
+          expiresAt?: number;
           externalId?: string;
           hasScheduledChanges: boolean;
           idempotencyKey?: string;
-          lastWebhookCreatedAtProvider?: number;
+          lastWebhookAt?: number;
           metadata?: Record<string, string>;
           notes: Record<string, string>;
           paidCount: number;
           pausedAt?: number;
-          planId: string;
+          providerUpdatedAt: number;
           quantity: number;
           raw: any;
           rawStatus?: string;
-          razorpayId: string;
+          razorpayCustomerId?: string;
+          razorpayPlanId: string;
+          razorpaySubscriptionId: string;
           remainingCount: number;
           shortUrl?: string;
           startAt?: number;
-          status: string;
+          status:
+            | "created"
+            | "authenticated"
+            | "active"
+            | "pending"
+            | "halted"
+            | "paused"
+            | "cancelled"
+            | "completed"
+            | "expired"
+            | "unknown";
           testMode: boolean;
           totalCount: number;
-          updatedAtProvider: number;
           userId?: string;
         },
+        Name
+      >;
+      releaseIdempotency: FunctionReference<
+        "mutation",
+        "internal",
+        { idempotencyKey: string; testMode?: boolean },
+        boolean,
         Name
       >;
       resume: FunctionReference<
         "action",
         "internal",
-        { subscriptionId: string; testMode?: boolean },
+        { razorpaySubscriptionId: string; testMode?: boolean },
         {
           _creationTime: number;
           _id: string;
           chargeAt?: number;
           createdAt: number;
           createdThroughComponent?: boolean;
-          currentEnd?: number;
-          currentStart?: number;
-          customerId?: string;
+          currentEndAt?: number;
+          currentStartAt?: number;
           endAt?: number;
           endedAt?: number;
-          expireBy?: number;
+          expiresAt?: number;
           externalId?: string;
           hasScheduledChanges: boolean;
           idempotencyKey?: string;
-          lastWebhookCreatedAtProvider?: number;
+          lastWebhookAt?: number;
           metadata?: Record<string, string>;
           notes: Record<string, string>;
           paidCount: number;
           pausedAt?: number;
-          planId: string;
+          providerUpdatedAt: number;
           quantity: number;
           raw: any;
           rawStatus?: string;
-          razorpayId: string;
+          razorpayCustomerId?: string;
+          razorpayPlanId: string;
+          razorpaySubscriptionId: string;
           remainingCount: number;
           shortUrl?: string;
           startAt?: number;
-          status: string;
+          status:
+            | "created"
+            | "authenticated"
+            | "active"
+            | "pending"
+            | "halted"
+            | "paused"
+            | "cancelled"
+            | "completed"
+            | "expired"
+            | "unknown";
           testMode: boolean;
           totalCount: number;
-          updatedAtProvider: number;
           userId?: string;
         },
         Name
@@ -979,13 +1229,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         {
           customerNotify?: boolean;
-          offerId?: string;
-          planId?: string;
           quantity?: number;
+          razorpayOfferId?: string;
+          razorpayPlanId?: string;
+          razorpaySubscriptionId: string;
           remainingCount?: number;
-          scheduleChangeAt?: "now" | "cycle_end";
+          scheduleChangeAt: "now" | "cycle_end";
           startAt?: number;
-          subscriptionId: string;
           testMode?: boolean;
         },
         {
@@ -994,44 +1244,52 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           chargeAt?: number;
           createdAt: number;
           createdThroughComponent?: boolean;
-          currentEnd?: number;
-          currentStart?: number;
-          customerId?: string;
+          currentEndAt?: number;
+          currentStartAt?: number;
           endAt?: number;
           endedAt?: number;
-          expireBy?: number;
+          expiresAt?: number;
           externalId?: string;
           hasScheduledChanges: boolean;
           idempotencyKey?: string;
-          lastWebhookCreatedAtProvider?: number;
+          lastWebhookAt?: number;
           metadata?: Record<string, string>;
           notes: Record<string, string>;
           paidCount: number;
           pausedAt?: number;
-          planId: string;
+          providerUpdatedAt: number;
           quantity: number;
           raw: any;
           rawStatus?: string;
-          razorpayId: string;
+          razorpayCustomerId?: string;
+          razorpayPlanId: string;
+          razorpaySubscriptionId: string;
           remainingCount: number;
           shortUrl?: string;
           startAt?: number;
-          status: string;
+          status:
+            | "created"
+            | "authenticated"
+            | "active"
+            | "pending"
+            | "halted"
+            | "paused"
+            | "cancelled"
+            | "completed"
+            | "expired"
+            | "unknown";
           testMode: boolean;
           totalCount: number;
-          updatedAtProvider: number;
           userId?: string;
         },
         Name
       >;
-    };
-    verification: {
-      checkout: FunctionReference<
+      verifyCheckout: FunctionReference<
         "action",
         "internal",
         {
-          orderId: string;
-          paymentId: string;
+          razorpayPaymentId: string;
+          razorpaySubscriptionId: string;
           signature: string;
           testMode?: boolean;
           userId?: string;
@@ -1045,7 +1303,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           contact?: string;
           createdAt: number;
           currency: string;
-          customerId?: string;
           email?: string;
           errorCode?: string;
           errorDescription?: string;
@@ -1055,79 +1312,26 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           externalId?: string;
           fee?: number;
           international?: boolean;
-          invoiceId?: string;
           method?: string;
           notes: Record<string, string>;
-          orderId?: string;
+          providerUpdatedAt: number;
           raw: any;
           rawStatus?: string;
-          razorpayId: string;
-          refundStatus?: string;
-          status: string;
-          subscriptionId?: string;
+          razorpayCustomerId?: string;
+          razorpayInvoiceId?: string;
+          razorpayOrderId?: string;
+          razorpayPaymentId: string;
+          razorpaySubscriptionId?: string;
+          refundStatus?: "partial" | "full";
+          status:
+            | "created"
+            | "authorized"
+            | "captured"
+            | "refunded"
+            | "failed"
+            | "unknown";
           tax?: number;
           testMode: boolean;
-          updatedAtProvider: number;
-          userId?: string;
-          verified: boolean;
-        },
-        Name
-      >;
-      paymentLink: FunctionReference<
-        "action",
-        "internal",
-        {
-          paymentId: string;
-          paymentLinkId: string;
-          referenceId: string;
-          signature: string;
-          status: string;
-        },
-        true,
-        Name
-      >;
-      subscriptionCheckout: FunctionReference<
-        "action",
-        "internal",
-        {
-          paymentId: string;
-          signature: string;
-          subscriptionId: string;
-          testMode?: boolean;
-          userId?: string;
-        },
-        {
-          _creationTime: number;
-          _id: string;
-          amount: number;
-          amountRefunded: number;
-          captured: boolean;
-          contact?: string;
-          createdAt: number;
-          currency: string;
-          customerId?: string;
-          email?: string;
-          errorCode?: string;
-          errorDescription?: string;
-          errorReason?: string;
-          errorSource?: string;
-          errorStep?: string;
-          externalId?: string;
-          fee?: number;
-          international?: boolean;
-          invoiceId?: string;
-          method?: string;
-          notes: Record<string, string>;
-          orderId?: string;
-          raw: any;
-          rawStatus?: string;
-          razorpayId: string;
-          refundStatus?: string;
-          status: string;
-          subscriptionId?: string;
-          tax?: number;
-          testMode: boolean;
-          updatedAtProvider: number;
           userId?: string;
           verified: boolean;
         },
@@ -1154,11 +1358,11 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         {
           errorCode?: string;
           event?: {
-            accountId?: string;
-            createdAtProvider: number;
-            entityId?: string;
             event: string;
             eventId: string;
+            providerCreatedAt: number;
+            razorpayAccountId?: string;
+            razorpayEntityId?: string;
           };
           status: "processed" | "duplicate" | "ignored" | "failed";
         },

@@ -50,8 +50,8 @@ const subscription = {
   status: "created",
 };
 
-function invalidArgument(promise: Promise<unknown>) {
-  return expect(promise).rejects.toMatchObject({ data: { code: "RAZORPAY_INVALID_ARGUMENT" } });
+function invalidResponse(promise: Promise<unknown>) {
+  return expect(promise).rejects.toMatchObject({ data: { code: "RAZORPAY_INVALID_RESPONSE" } });
 }
 
 test("order mirror preserves monotonic totals and immutable identity", async () => {
@@ -66,8 +66,8 @@ test("order mirror preserves monotonic totals and immutable identity", async () 
     status: "paid",
     rawStatus: "future_status",
   });
-  await invalidArgument(put({ ...order, amount: 2000 }, 40));
-  await invalidArgument(put({ ...order, currency: "USD" }, 40));
+  await invalidResponse(put({ ...order, amount: 2000 }, 40));
+  await invalidResponse(put({ ...order, currency: "USD" }, 40));
 });
 
 test("payment mirror rejects changed ownership and preserves capture and refunded totals", async () => {
@@ -92,10 +92,10 @@ test("payment mirror rejects changed ownership and preserves capture and refunde
       10,
     ),
   ).toMatchObject({ status: "captured", captured: true, amountRefunded: 400 });
-  await invalidArgument(put({ ...payment, amount: 2000 }, 30));
-  await invalidArgument(put({ ...payment, order_id: "order_other" }, 30));
-  await invalidArgument(put({ ...payment, subscription_id: "sub_other" }, 30));
-  await invalidArgument(put({ ...payment, invoice_id: "inv_other" }, 30));
+  await invalidResponse(put({ ...payment, amount: 2000 }, 30));
+  await invalidResponse(put({ ...payment, order_id: "order_other" }, 30));
+  await invalidResponse(put({ ...payment, subscription_id: "sub_other" }, 30));
+  await invalidResponse(put({ ...payment, invoice_id: "inv_other" }, 30));
 });
 
 test("processed refund resists stale status and immutable payment or amount changes", async () => {
@@ -104,8 +104,8 @@ test("processed refund resists stale status and immutable payment or amount chan
     t.mutation(internal.mutations.putRefund, { raw, observedAt });
   await put({ ...refund, status: "processed" }, 20);
   expect(await put({ ...refund, status: "pending" }, 30)).toMatchObject({ status: "processed" });
-  await invalidArgument(put({ ...refund, payment_id: "pay_other" }, 30));
-  await invalidArgument(put({ ...refund, amount: 200 }, 30));
+  await invalidResponse(put({ ...refund, payment_id: "pay_other" }, 30));
+  await invalidResponse(put({ ...refund, amount: 200 }, 30));
 });
 
 test("customer mirror refuses cross-user links and stale provider observations", async () => {
@@ -130,13 +130,13 @@ test("customer mirror refuses cross-user links and stale provider observations",
 test("plan identity and idempotency claim fingerprint are enforced", async () => {
   const t = convexTest(schema, modules);
   await t.mutation(internal.mutations.putPlan, { raw: plan, observedAt: 10 });
-  await invalidArgument(
+  await invalidResponse(
     t.mutation(internal.mutations.putPlan, {
       raw: { ...plan, item: { ...plan.item, amount: 2000 } },
       observedAt: 20,
     }),
   );
-  await invalidArgument(
+  await invalidResponse(
     t.mutation(internal.mutations.putPlan, {
       raw: plan,
       observedAt: 20,
@@ -148,8 +148,8 @@ test("plan identity and idempotency claim fingerprint are enforced", async () =>
     await ctx.db.insert("idempotencyRequests", {
       testMode: false,
       resource: "plan",
-      key: "present",
-      fingerprint: "original",
+      idempotencyKey: "present",
+      requestFingerprint: "original",
       status: "pending",
       createdAt: 10,
     });
@@ -170,8 +170,8 @@ test("subscription mirror cannot regress paid count and settles its claim", asyn
     await ctx.db.insert("idempotencyRequests", {
       testMode: false,
       resource: "subscription",
-      key: "subscription-key",
-      fingerprint: "fingerprint",
+      idempotencyKey: "subscription-key",
+      requestFingerprint: "fingerprint",
       status: "pending",
       createdAt: 10,
     });
@@ -185,7 +185,7 @@ test("subscription mirror cannot regress paid count and settles its claim", asyn
   await t.mutation(internal.webhooks.applyEntities, {
     event: "subscription.updated",
     rawEntity: subscription,
-    createdAtProvider: 10,
+    providerCreatedAt: 10,
     testMode: false,
   });
   expect(await t.run((ctx) => ctx.db.query("subscriptions").first())).toMatchObject({
@@ -196,10 +196,13 @@ test("subscription mirror cannot regress paid count and settles its claim", asyn
   const claim = await t.run((ctx) =>
     ctx.db
       .query("idempotencyRequests")
-      .withIndex("by_resource_and_testMode_and_key", (q) =>
-        q.eq("resource", "subscription").eq("testMode", false).eq("key", "subscription-key"),
+      .withIndex("by_resource_and_testMode_and_idempotencyKey", (q) =>
+        q
+          .eq("resource", "subscription")
+          .eq("testMode", false)
+          .eq("idempotencyKey", "subscription-key"),
       )
       .unique(),
   );
-  expect(claim).toMatchObject({ status: "completed", razorpayId: "sub_write" });
+  expect(claim).toMatchObject({ status: "completed", razorpayEntityId: "sub_write" });
 });

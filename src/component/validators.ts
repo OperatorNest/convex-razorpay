@@ -1,4 +1,5 @@
 import { razorpayError } from "../shared/errors.js";
+
 import { v } from "convex/values";
 import schema from "./schema.js";
 
@@ -75,4 +76,11 @@ export function optionalLinkage(link: {
       ? {}
       : { createdThroughComponent: link.createdThroughComponent }),
   };
+}
+
+export function timestampSeconds(timestampAt: number | undefined): number | undefined {
+  if (timestampAt === undefined) return undefined;
+  if (!Number.isSafeInteger(timestampAt) || timestampAt < 0)
+    throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
+  return Math.floor(timestampAt / 1000);
 }

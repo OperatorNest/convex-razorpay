@@ -21,26 +21,34 @@ test("live fetches reject provider records with a different resource ID", async 
   );
   const t = convexTest(schema, modules);
 
-  await expect(t.action(api.orders.fetch, { orderId: "order_requested" })).rejects.toMatchObject({
-    data: { code: "RAZORPAY_INVALID_ARGUMENT" },
-  });
-  await expect(t.action(api.payments.fetch, { paymentId: "pay_requested" })).rejects.toMatchObject({
-    data: { code: "RAZORPAY_INVALID_ARGUMENT" },
-  });
-  await expect(t.action(api.refunds.fetch, { refundId: "rfnd_requested" })).rejects.toMatchObject({
-    data: { code: "RAZORPAY_INVALID_ARGUMENT" },
-  });
   await expect(
-    t.action(api.customers.fetch, { customerId: "cust_requested" }),
+    t.action(api.orders.fetch, { razorpayOrderId: "order_requested" }),
   ).rejects.toMatchObject({
-    data: { code: "RAZORPAY_INVALID_ARGUMENT" },
-  });
-  await expect(t.action(api.plans.fetch, { planId: "plan_requested" })).rejects.toMatchObject({
-    data: { code: "RAZORPAY_INVALID_ARGUMENT" },
+    data: { code: "RAZORPAY_INVALID_RESPONSE" },
   });
   await expect(
-    t.action(api.subscriptions.fetch, { subscriptionId: "sub_requested" }),
-  ).rejects.toMatchObject({ data: { code: "RAZORPAY_INVALID_ARGUMENT" } });
+    t.action(api.payments.fetch, { razorpayPaymentId: "pay_requested" }),
+  ).rejects.toMatchObject({
+    data: { code: "RAZORPAY_INVALID_RESPONSE" },
+  });
+  await expect(
+    t.action(api.refunds.fetch, { razorpayRefundId: "rfnd_requested" }),
+  ).rejects.toMatchObject({
+    data: { code: "RAZORPAY_INVALID_RESPONSE" },
+  });
+  await expect(
+    t.action(api.customers.fetch, { razorpayCustomerId: "cust_requested" }),
+  ).rejects.toMatchObject({
+    data: { code: "RAZORPAY_INVALID_RESPONSE" },
+  });
+  await expect(
+    t.action(api.plans.fetch, { razorpayPlanId: "plan_requested" }),
+  ).rejects.toMatchObject({
+    data: { code: "RAZORPAY_INVALID_RESPONSE" },
+  });
+  await expect(
+    t.action(api.subscriptions.fetch, { razorpaySubscriptionId: "sub_requested" }),
+  ).rejects.toMatchObject({ data: { code: "RAZORPAY_INVALID_RESPONSE" } });
 });
 
 test("live order payment listing rejects cross-order provider data before mirroring it", async () => {
@@ -62,9 +70,16 @@ test("live order payment listing rejects cross-order provider data before mirror
   const t = convexTest(schema, modules);
 
   await expect(
-    t.action(api.orders.fetchPayments, { orderId: "order_requested" }),
-  ).rejects.toMatchObject({ data: { code: "RAZORPAY_INVALID_ARGUMENT" } });
-  expect(await t.query(api.payments.listForOrder, { orderId: "order_requested" })).toEqual([]);
+    t.action(api.orders.fetchPayments, { razorpayOrderId: "order_requested" }),
+  ).rejects.toMatchObject({ data: { code: "RAZORPAY_INVALID_RESPONSE" } });
+  expect(
+    await t
+      .query(api.payments.list, {
+        paginationOpts: { numItems: 100, cursor: null },
+        razorpayOrderId: "order_requested",
+      })
+      .then(({ page }) => page),
+  ).toEqual([]);
 });
 
 test("live refund creation rejects a provider refund linked to another payment", async () => {
@@ -78,11 +93,12 @@ test("live refund creation rejects a provider refund linked to another payment",
 
   await expect(
     t.action(api.refunds.create, {
-      paymentId: "pay_requested",
+      speed: "normal",
+      razorpayPaymentId: "pay_requested",
       amount: 100,
       idempotencyKey: "refund_key_123",
     }),
-  ).rejects.toMatchObject({ data: { code: "RAZORPAY_INVALID_ARGUMENT" } });
+  ).rejects.toMatchObject({ data: { code: "RAZORPAY_INVALID_RESPONSE" } });
   expect(await t.run((ctx) => ctx.db.query("refunds").take(1))).toEqual([]);
 });
 
@@ -116,13 +132,13 @@ test("live order create mirrors the provider record and keyed retry does not pos
     testMode: false,
   };
 
-  const first = await t.action(api.orders.create, args);
-  const second = await t.action(api.orders.create, args);
-  expect(first.order.razorpayId).toBe("order_live_fixture");
+  const first = await t.action(api.orders.create, { partialPayment: false, ...args });
+  const second = await t.action(api.orders.create, { partialPayment: false, ...args });
+  expect(first.order.razorpayOrderId).toBe("order_live_fixture");
   expect(second.order._id).toBe(first.order._id);
   expect(first.keyId).toBe("rzp_test_fixture");
   expect(fetch).toHaveBeenCalledTimes(1);
-  const mirrored = await t.query(api.orders.get, { orderId: "order_live_fixture" });
+  const mirrored = await t.query(api.orders.get, { razorpayOrderId: "order_live_fixture" });
   expect(mirrored).toMatchObject({
     _id: first.order._id,
     userId: "user_live_fixture",

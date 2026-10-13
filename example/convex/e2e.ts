@@ -1,4 +1,4 @@
-import { Razorpay, checkoutOptions } from "@operatornest/convex-razorpay";
+import { Razorpay, buildCheckoutOptions } from "@operatornest/convex-razorpay";
 import { ConvexError, v } from "convex/values";
 import { components } from "./_generated/api.js";
 import { env, internalAction, internalQuery } from "./_generated/server.js";
@@ -32,13 +32,13 @@ export const environment = internalQuery({
 export const setup = internalAction({
   args: { runId: v.string() },
   returns: v.object({
-    customerId: v.string(),
-    orderId: v.string(),
+    razorpayCustomerId: v.string(),
+    razorpayOrderId: v.string(),
     orderStatus: v.string(),
-    planId: v.string(),
-    subscriptionId: v.string(),
+    razorpayPlanId: v.string(),
+    razorpaySubscriptionId: v.string(),
     subscriptionStatus: v.string(),
-    checkoutOptions: v.object({
+    buildCheckoutOptions: v.object({
       key: v.optional(v.string()),
       order_id: v.string(),
       amount: v.number(),
@@ -57,6 +57,7 @@ export const setup = internalAction({
       idempotencyKey: `e2e_customer_${runId}`,
     });
     const order = await razorpay.orders.create(ctx, {
+      partialPayment: false,
       amount: 100,
       currency: "INR",
       userId,
@@ -70,26 +71,30 @@ export const setup = internalAction({
       idempotencyKey: `e2e_plan_${runId}`,
     });
     const subscription = await razorpay.subscriptions.create(ctx, {
-      planId: plan.razorpayId,
+      quantity: 1,
+      customerNotify: true,
+      razorpayPlanId: plan.razorpayPlanId,
       totalCount: 12,
       userId,
       idempotencyKey: `e2e_subscription_${runId}`,
     });
-    const fetchedOrder = await razorpay.orders.fetch(ctx, { orderId: order.razorpayId });
+    const fetchedOrder = await razorpay.orders.fetch(ctx, {
+      razorpayOrderId: order.razorpayOrderId,
+    });
     const checkoutOrder = {
-      razorpayId: order.razorpayId,
+      razorpayOrderId: order.razorpayOrderId,
       amount: order.amount,
       currency: order.currency,
       ...(order.keyId === undefined ? {} : { keyId: order.keyId }),
     };
     return {
-      customerId: customer.razorpayId,
-      orderId: order.razorpayId,
+      razorpayCustomerId: customer.razorpayCustomerId,
+      razorpayOrderId: order.razorpayOrderId,
       orderStatus: fetchedOrder.status,
-      planId: plan.razorpayId,
-      subscriptionId: subscription.razorpayId,
+      razorpayPlanId: plan.razorpayPlanId,
+      razorpaySubscriptionId: subscription.razorpaySubscriptionId,
       subscriptionStatus: subscription.status,
-      checkoutOptions: checkoutOptions(checkoutOrder, {
+      buildCheckoutOptions: buildCheckoutOptions(checkoutOrder, {
         name: "OperatorNest verification",
         description: "Maintainer e2e verification",
       }),
@@ -98,46 +103,49 @@ export const setup = internalAction({
 });
 
 export const fetches = internalAction({
-  args: { orderId: v.string(), planId: v.string(), subscriptionId: v.string() },
+  args: {
+    razorpayOrderId: v.string(),
+    razorpayPlanId: v.string(),
+    razorpaySubscriptionId: v.string(),
+  },
   returns: v.object({
-    orderId: v.string(),
+    razorpayOrderId: v.string(),
     orderStatus: v.string(),
-    planId: v.string(),
-    subscriptionId: v.string(),
+    razorpayPlanId: v.string(),
+    razorpaySubscriptionId: v.string(),
     subscriptionStatus: v.string(),
   }),
   handler: async (ctx, args) => {
     assertProviderMode();
-    const order = await razorpay.orders.fetch(ctx, { orderId: args.orderId });
-    const plan = await razorpay.plans.fetch(ctx, { planId: args.planId });
+    const order = await razorpay.orders.fetch(ctx, { razorpayOrderId: args.razorpayOrderId });
+    const plan = await razorpay.plans.fetch(ctx, { razorpayPlanId: args.razorpayPlanId });
     const subscription = await razorpay.subscriptions.fetch(ctx, {
-      subscriptionId: args.subscriptionId,
+      razorpaySubscriptionId: args.razorpaySubscriptionId,
     });
     return {
-      orderId: order.razorpayId,
+      razorpayOrderId: order.razorpayOrderId,
       orderStatus: order.status,
-      planId: plan.razorpayId,
-      subscriptionId: subscription.razorpayId,
+      razorpayPlanId: plan.razorpayPlanId,
+      razorpaySubscriptionId: subscription.razorpaySubscriptionId,
       subscriptionStatus: subscription.status,
     };
   },
 });
 
 export const cancelSubscription = internalAction({
-  args: { subscriptionId: v.string() },
+  args: { razorpaySubscriptionId: v.string() },
   returns: v.object({
-    subscriptionId: v.string(),
+    razorpaySubscriptionId: v.string(),
     status: v.string(),
     hasScheduledChanges: v.boolean(),
   }),
-  handler: async (ctx, { subscriptionId }) => {
+  handler: async (ctx, { razorpaySubscriptionId }) => {
     assertProviderMode();
-    const subscription = await razorpay.subscriptions.cancel(ctx, {
-      subscriptionId,
-      cancelAtCycleEnd: true,
+    const subscription = await razorpay.subscriptions.cancelAtCycleEnd(ctx, {
+      razorpaySubscriptionId,
     });
     return {
-      subscriptionId: subscription.razorpayId,
+      razorpaySubscriptionId: subscription.razorpaySubscriptionId,
       status: subscription.status,
       hasScheduledChanges: subscription.hasScheduledChanges,
     };
@@ -145,12 +153,14 @@ export const cancelSubscription = internalAction({
 });
 
 export const paymentsForOrder = internalAction({
-  args: { orderId: v.string() },
-  returns: v.array(v.object({ paymentId: v.string(), status: v.string(), captured: v.boolean() })),
-  handler: async (ctx, { orderId }) => {
+  args: { razorpayOrderId: v.string() },
+  returns: v.array(
+    v.object({ razorpayPaymentId: v.string(), status: v.string(), captured: v.boolean() }),
+  ),
+  handler: async (ctx, { razorpayOrderId }) => {
     assertProviderMode();
-    return (await razorpay.orders.fetchPayments(ctx, { orderId })).map((payment) => ({
-      paymentId: payment.razorpayId,
+    return (await razorpay.orders.fetchPayments(ctx, { razorpayOrderId })).map((payment) => ({
+      razorpayPaymentId: payment.razorpayPaymentId,
       status: payment.status,
       captured: payment.captured,
     }));
@@ -158,18 +168,18 @@ export const paymentsForOrder = internalAction({
 });
 
 export const verifyCheckout = internalAction({
-  args: { orderId: v.string(), paymentId: v.string(), signature: v.string() },
+  args: { razorpayOrderId: v.string(), razorpayPaymentId: v.string(), signature: v.string() },
   returns: v.object({
-    paymentId: v.string(),
+    razorpayPaymentId: v.string(),
     status: v.string(),
     captured: v.boolean(),
     verified: v.boolean(),
   }),
   handler: async (ctx, args) => {
     assertProviderMode();
-    const payment = await razorpay.verification.checkout(ctx, args);
+    const payment = await razorpay.orders.verifyCheckout(ctx, args);
     return {
-      paymentId: payment.razorpayId,
+      razorpayPaymentId: payment.razorpayPaymentId,
       status: payment.status,
       captured: payment.captured,
       verified: payment.verified,
@@ -178,22 +188,24 @@ export const verifyCheckout = internalAction({
 });
 
 export const refund = internalAction({
-  args: { paymentId: v.string(), runId: v.string() },
-  returns: v.object({ refundId: v.string(), status: v.string(), amount: v.number() }),
-  handler: async (ctx, { paymentId, runId }) => {
+  args: { razorpayPaymentId: v.string(), runId: v.string() },
+  returns: v.object({ razorpayRefundId: v.string(), status: v.string(), amount: v.number() }),
+  handler: async (ctx, { razorpayPaymentId, runId }) => {
     assertProviderMode();
-    const payment = await razorpay.payments.fetch(ctx, { paymentId });
+    const payment = await razorpay.payments.fetch(ctx, { razorpayPaymentId });
     if (payment.status !== "captured" || !payment.captured)
       throw new ConvexError({
         code: "E2E_REFUND_REQUIRES_CAPTURED_PAYMENT",
         message: "Refusing e2e refund until the payment is captured",
       });
     const createdRefund = await razorpay.refunds.create(ctx, {
-      paymentId,
+      speed: "normal",
+      amount: 100,
+      razorpayPaymentId,
       idempotencyKey: `e2e_refund_${runId}`,
     });
     return {
-      refundId: createdRefund.razorpayId,
+      razorpayRefundId: createdRefund.razorpayRefundId,
       status: createdRefund.status,
       amount: createdRefund.amount,
     };
@@ -201,7 +213,7 @@ export const refund = internalAction({
 });
 
 export const state = internalQuery({
-  args: { orderId: v.string(), eventIds: v.array(v.string()) },
+  args: { razorpayOrderId: v.string(), eventIds: v.array(v.string()) },
   returns: v.object({
     order: v.union(
       v.object({
@@ -214,7 +226,7 @@ export const state = internalQuery({
     ),
     payments: v.array(
       v.object({
-        paymentId: v.string(),
+        razorpayPaymentId: v.string(),
         status: v.string(),
         captured: v.boolean(),
         verified: v.boolean(),
@@ -224,15 +236,17 @@ export const state = internalQuery({
       v.object({ eventId: v.string(), event: v.string(), invocationCount: v.number() }),
     ),
   }),
-  handler: async (ctx, { orderId, eventIds }) => {
+  handler: async (ctx, { razorpayOrderId, eventIds }) => {
     if (eventIds.length > 20)
       throw new ConvexError({
         code: "E2E_TOO_MANY_EVENT_IDS",
         message: "End-to-end verification accepts at most 20 webhook event ids per query",
       });
     const [order, payments] = await Promise.all([
-      razorpay.orders.get(ctx, { orderId }),
-      razorpay.payments.listForOrder(ctx, { orderId, limit: 20 }),
+      razorpay.orders.get(ctx, { razorpayOrderId }),
+      razorpay.payments
+        .list(ctx, { paginationOpts: { numItems: 20, cursor: null }, razorpayOrderId })
+        .then(({ page }) => page),
     ]);
     const rows = await Promise.all(
       eventIds.map((eventId) =>
@@ -257,7 +271,7 @@ export const state = internalQuery({
           }
         : null,
       payments: payments.map((payment) => ({
-        paymentId: payment.razorpayId,
+        razorpayPaymentId: payment.razorpayPaymentId,
         status: payment.status,
         captured: payment.captured,
         verified: payment.verified,
