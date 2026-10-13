@@ -1,13 +1,20 @@
 import { Razorpay, sha256Hex } from "@operatornest/convex-razorpay";
 import { ConvexError, v } from "convex/values";
 import { components } from "./_generated/api.js";
-import { action, env, query } from "./_generated/server.js";
+import { action, env, query, type ActionCtx, type QueryCtx } from "./_generated/server.js";
 
 const razorpay = new Razorpay(components.razorpay, {
   testMode: env.RAZORPAY_TEST_MODE === "true",
 });
 const demoPrice = 50000;
 const demoCurrency = "INR";
+
+async function requireUser(ctx: Pick<ActionCtx | QueryCtx, "auth">) {
+  const identity = await ctx.auth.getUserIdentity();
+  if (!identity)
+    throw new ConvexError({ code: "APP_AUTH_REQUIRED", message: "Authentication is required." });
+  return identity;
+}
 
 export const createOrder = action({
   args: { cartId: v.string() },
@@ -18,9 +25,7 @@ export const createOrder = action({
     keyId: v.optional(v.string()),
   }),
   handler: async (ctx, { cartId }) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity)
-      throw new ConvexError({ code: "APP_AUTH_REQUIRED", message: "Authentication required" });
+    const identity = await requireUser(ctx);
     if (!cartId || cartId.length > 128)
       throw new ConvexError({ code: "APP_INVALID_CART", message: "Invalid cart id" });
     const idempotencyKey = await sha256Hex(`${identity.tokenIdentifier}|${cartId}`);
@@ -46,9 +51,7 @@ export const getOrder = query({
     v.null(),
   ),
   handler: async (ctx, { orderId }) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity)
-      throw new ConvexError({ code: "APP_AUTH_REQUIRED", message: "Authentication required" });
+    const identity = await requireUser(ctx);
     const order = await razorpay.orders.get(ctx, { orderId });
     if (!order || order.userId !== identity.tokenIdentifier) return null;
     return {

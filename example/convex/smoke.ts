@@ -1,5 +1,3 @@
-// Internal harness driven by `pnpm smoke` through `convex run` against a local deployment.
-// These functions are not callable by clients; they stand in for authenticated app code.
 import { Razorpay, checkoutOptions, isRazorpayError } from "@operatornest/convex-razorpay";
 import { v } from "convex/values";
 import { components } from "./_generated/api.js";

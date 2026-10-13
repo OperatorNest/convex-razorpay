@@ -6,7 +6,7 @@ body:
     id: package_version
     attributes:
       label: Package version
-      placeholder: e.g. 0.2.1, or commit SHA for an unreleased checkout
+      placeholder: Package version or unreleased commit SHA
     validations:
       required: true
   - type: input
@@ -32,7 +32,7 @@ body:
     id: razorpay_mode
     attributes:
       label: Razorpay mode
-      description: Provide when relevant; leave blank if not applicable or unavailable.
+      description: Select the provider account mode.
       options: [Test, Live, Not applicable]
     validations:
       required: false
@@ -40,7 +40,7 @@ body:
     id: reproduction
     attributes:
       label: Minimal reproduction
-      description: Include the smallest code or steps that reproduce the issue. Redact sensitive data.
+      description: Include code or steps that reproduce the failure; remove credentials and personal data.
     validations:
       required: true
   - type: textarea
@@ -59,7 +59,7 @@ body:
     id: logs
     attributes:
       label: Optional logs
-      description: Do not include API keys, webhook secrets, access tokens, payment card or bank data, customer or recipient personal data, or unredacted webhook payloads.
+      description: Do not include API keys, webhook secrets, access tokens, payment card or bank data, personal data, or unredacted webhook payloads.
     validations:
       required: false
   - type: checkboxes

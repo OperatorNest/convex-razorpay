@@ -1,4 +1,3 @@
-// Interactive, maintainer-only Razorpay test-dashboard verification.
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHmac, createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
@@ -59,7 +58,7 @@ if (dryRun) {
   );
   console.log(`Missing or invalid: ${problems.length ? problems.join(", ") : "none"}`);
   console.log(
-    "Plan: shared lock → build → anonymous local Convex dev → apply env and force provider API mode → Cloudflare quick tunnel → dashboard webhook → provider calls → local Checkout.js payment → webhook/callback/dedupe assertions → redacted fixtures and observed docs → cleanup.",
+    "Interactive check: provider-backed Checkout, capture, refund, webhook deduplication and callback; saves redacted fixtures.",
   );
   process.exitCode = problems.length ? 1 : 0;
 } else {
@@ -341,9 +340,7 @@ async function until(name, predicate, deadline, signal) {
     try {
       const value = await predicate();
       if (value) return value;
-    } catch {
-      // Provider deliveries and Convex function propagation can lag.
-    }
+    } catch {}
     const seconds = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
     process.stdout.write(
       `\rWaiting for ${name}: ${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s  `,
@@ -413,8 +410,8 @@ function writeObservedDocs(deliveries, subscription, refund) {
   const readmePath = "README.md";
   const readme = readFileSync(readmePath, "utf8");
   const next = readme.replace(
-    /^Built against:?.*$/m,
-    `Built against Razorpay's official API documentation and \`razorpay-node\` v2.9.8 behavior. A [${date} Razorpay Test Mode end-to-end run](${report}) observed payment capture, refund processing, and verified webhooks. Production account behavior and other provider limits remain unconfirmed.`,
+    /^Provider test-account observations:.*$/m,
+    `Provider test-account observations: [${date} Razorpay Test Mode end-to-end run](https://github.com/OperatorNest/convex-razorpay/blob/main/${report}) observed payment capture, refund processing, and verified webhooks. Production account behavior and other provider limits remain unconfirmed.`,
   );
   writeFileSync(readmePath, next);
   console.log(`PASS  observed findings recorded in ${report} and README.md`);
@@ -445,9 +442,39 @@ function writePartialObservations(deliveries) {
   console.log(`PASS  partial observed findings recorded in ${report}`);
 }
 
+function componentRows(table) {
+  const result = spawnSync(
+    "pnpm",
+    [
+      "exec",
+      "convex",
+      "data",
+      table,
+      "--component",
+      "razorpay",
+      "--limit",
+      "1000",
+      "--order",
+      "desc",
+      "--format",
+      "json",
+    ],
+    { encoding: "utf8", env: { ...process.env, CONVEX_AGENT_MODE: "anonymous" } },
+  );
+  if (result.status !== 0) throw new Error(`Component table read failed: ${table}`);
+  return JSON.parse(result.stdout);
+}
+
+function receipts(eventId, bodyHash) {
+  const rows = componentRows("webhookEvents");
+  return {
+    byEventId: rows.find((row) => row.eventId === eventId) ?? null,
+    byBodyHash: rows.find((row) => row.bodyHash === bodyHash) ?? null,
+  };
+}
+
 function receipt(delivery) {
-  const bodyHash = createHash("sha256").update(delivery.body).digest("hex");
-  return cli("webhooks:e2eReceipt", { eventId: delivery.eventId ?? "", bodyHash }, true);
+  return receipts(delivery.eventId ?? "", createHash("sha256").update(delivery.body).digest("hex"));
 }
 
 async function verifyDelivery(delivery, siteUrl, webhookSecret) {
@@ -493,11 +520,7 @@ async function verifyDelivery(delivery, siteUrl, webhookSecret) {
     },
   });
   pass(`${delivery.event} changed-body event-id replay accepted`, variant.status === 200);
-  const variantReceipt = cli(
-    "webhooks:e2eReceipt",
-    { eventId: callbackId, bodyHash: variantHash },
-    true,
-  );
+  const variantReceipt = receipts(callbackId, variantHash);
   pass(
     `${delivery.event} event-id deduplicated independently`,
     variantReceipt.byEventId?._id === first.byBodyHash._id &&
@@ -511,10 +534,9 @@ async function verifyDelivery(delivery, siteUrl, webhookSecret) {
     headers: { ...headers, "x-razorpay-event-id": alternateId },
   });
   pass(`${delivery.event} body-hash replay accepted`, other.status === 200);
-  const alternateReceipt = cli(
-    "webhooks:e2eReceipt",
-    { eventId: alternateId, bodyHash: createHash("sha256").update(delivery.body).digest("hex") },
-    true,
+  const alternateReceipt = receipts(
+    alternateId,
+    createHash("sha256").update(delivery.body).digest("hex"),
   );
   pass(
     `${delivery.event} body-hash deduplicated`,
@@ -723,7 +745,7 @@ async function main() {
     const refunded = await until(
       "processed refund mirror",
       () => {
-        const mirror = cli("refunds:e2eRefund", { refundId: refund.refundId }, true);
+        const mirror = componentRows("refunds").find((row) => row.razorpayId === refund.refundId);
         return mirror?.status === "processed" &&
           mirror.paymentId === reply.razorpay_payment_id &&
           mirror.amount === refund.amount &&

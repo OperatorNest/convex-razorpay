@@ -1,52 +1,39 @@
 # Contributing
 
-Read [README](README.md) and the relevant [ADR](docs/adr/) before changing a public API. Keep changes scoped to this component and its example.
+Read [README.md](README.md), [AGENTS.md](AGENTS.md) and relevant [ADRs](docs/adr/). Keep changes within the component and its example.
 
-Use the tracked toolchain with `mise trust && mise install`, then `mise exec -- pnpm install --frozen-lockfile` if your global pnpm is older. Consumers need Node.js 22.19 or newer. In a fresh checkout, initialize the anonymous local Convex deployment and generate bindings:
+## Setup
+
+Development uses Node 24 and pnpm 12.9.1 through mise; consumers need Node 24 or newer.
 
 ```sh
+mise trust && mise install
+mise exec -- pnpm install --frozen-lockfile
 CONVEX_AGENT_MODE=anonymous pnpm exec convex init
 pnpm build:codegen
 ```
 
-The component owns Razorpay transport, verified webhook ingest, and payment mirrors. The consuming app owns authentication, authorization, trusted prices, and fulfillment. Keep credentials in component env variables bound by reference. Never hand-edit generated files or put real keys, customer records, or webhook bodies in tests, examples, logs, or reports.
+Codegen and smoke use an anonymous local Convex deployment without cloud login. They share a backend lock; do not terminate another checkout's backend.
 
-## End-to-end testing
+## Checks
 
-A maintainer runs `pnpm e2e` on macOS against
-Razorpay's real API with **Test Mode** (`rzp_test_*`) keys. This is interactive
-and is not part of CI. Copy `.env.e2e.example` to the ignored `.env.e2e`,
-fill the three required variables locally, and run `pnpm e2e --dry-run`.
-The dry run lists missing or invalid variable **names** and makes no network
-calls. `pnpm e2e --wait 15` allows 15 minutes for Checkout and webhook
-delivery; the default is 10.
+Run affected tests before `pnpm check` (format, build, type-aware lint, typecheck, Knip, source invariants and coverage). Component, schema or shared runtime changes also require `pnpm build:codegen` and `pnpm smoke`. Prose-only changes require `pnpm fmt:check`; executable examples require their affected tests. Keep coverage thresholds unchanged or raise them. Commit regenerated bindings with their inputs; never edit generated files.
 
-The runner takes the shared local lock, builds, starts the existing anonymous
-local Convex deployment, and loads `.env.e2e` into it. It prints a boxed
-Cloudflare quick tunnel URL. In the Razorpay dashboard select **Test Mode →
-Webhooks**, add that exact URL, use the existing
-`RAZORPAY_WEBHOOK_SECRET` value as its secret, and enable
-`payment.authorized`, `payment.captured`, `payment.failed`, `order.paid`,
-`refund.created`, `refund.processed`, `refund.failed`, and `subscription.*`.
-Press Enter in the terminal after saving the webhook. The maintainer then completes
-the Checkout.js payment in the locally opened page using a
-[documented test card](https://razorpay.com/docs/payments/payments/test-card-details/)
-or [test UPI VPA](https://razorpay.com/docs/payments/payments/test-upi-details/).
-The tool attempts a refund only after capture, checks delivery, deduplication,
-and the app callback, and writes redacted payload fixtures under
-`tests/fixtures/e2e/`. Review generated fixtures and observation
-notes before committing them. Do not run this tool with production keys or
-commit `.env.e2e`; `pnpm e2e:env` remains available to load only the
-credentials into the local deployment.
+## Change requirements
 
-Changes to component behavior need `pnpm build:codegen`, `pnpm test`, `pnpm typecheck`, and `pnpm smoke`. Run `pnpm check` for the full formatting, build, lint, typecheck, Knip, and coverage gate. Before release, also run `pnpm audit --prod --audit-level high` and inspect `pnpm pack --dry-run`. Describe observed behavior and update README or ADRs only when their claims change.
+- Commit messages and PR titles follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)
+  (`feat:`, `fix:`, `docs:`, `test:`, `chore:`); a breaking change adds `!` after the type.
+- Until 1.0.0, a breaking change ships without compatibility code, deprecation periods or data
+  migrations; its changeset is a `minor` bump that states what breaks.
 
-For a bug report, provide the package, Convex, and Node.js versions, runtime, operation, a minimal reproduction, expected result, and actual result. Remove credentials, tokens, payment details, recipient data, and personal information from reports and logs. Security reports go through [private vulnerability reporting](https://github.com/OperatorNest/convex-razorpay/security/advisories/new).
+## Maintainer provider verification
 
-Follow the [OperatorNest Code of Conduct](https://github.com/OperatorNest/.github/blob/main/CODE_OF_CONDUCT.md) and [support guidance](https://github.com/OperatorNest/.github/blob/main/SUPPORT.md).
+The interactive `pnpm e2e` check uses a maintainer's Razorpay test account on macOS, outside CI. Copy `.env.e2e.example` to ignored `.env.e2e`, set its three credentials and run `pnpm e2e --dry-run` to validate names without network calls. Never use production keys. `pnpm e2e:env` loads only credentials into the local component.
 
-## Releasing
+The runner builds under the shared lock, starts the anonymous backend and prints a Cloudflare tunnel URL. Add that URL under **Test Mode → Webhooks**, using your configured webhook secret. Enable `payment.authorized`, `payment.captured`, `payment.failed`, `order.paid`, `refund.created`, `refund.processed`, `refund.failed` and `subscription.*`, then press Enter. Complete the local Checkout with a [test card](https://razorpay.com/docs/payments/payments/test-card-details/) or [test UPI VPA](https://razorpay.com/docs/payments/payments/test-upi-details/). The runner checks capture, refund, webhook deduplication and callbacks. Review redacted fixtures in `tests/fixtures/e2e/` before committing them. `--wait` sets the timeout in minutes; its default is 10.
 
-Add a changeset to user-facing changes with `pnpm changeset`. A maintainer runs `pnpm changeset version` on a branch and reviews the version and changelog through a PR. The release workflow validates the same commit through CI and smoke before publishing a new package version with npm trusted publishing. Publishing, pushing, deployment, and registry submissions require explicit authorization.
+## Reports and releases
 
-The end-to-end test is a maintainer-run check with their own provider test account and keys. It is never run in CI.
+Bug reports need package, Convex and Node versions, deployment type, operation, a minimal reproduction, expected result and actual result. Remove credentials, payment details and personal data. Use [private vulnerability reporting](https://github.com/OperatorNest/convex-razorpay/security/advisories/new) for security defects. Follow the [Code of Conduct](https://github.com/OperatorNest/.github/blob/main/CODE_OF_CONDUCT.md) and [support guidance](https://github.com/OperatorNest/.github/blob/main/SUPPORT.md).
+
+Add one changeset for consumer-visible changes. A maintainer versions on a branch and reviews the changelog through a PR. Before release, run `pnpm check`, `pnpm smoke`, `pnpm audit --prod --audit-level high` and `pnpm pack --dry-run`. The release workflow publishes with npm trusted publishing after CI and smoke pass on the same commit. Publishing, pushing, deploying and registry submissions require explicit authorization.

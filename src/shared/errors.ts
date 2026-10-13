@@ -1,5 +1,5 @@
 import { ConvexError } from "convex/values";
-import { isRecord } from "./validation.js";
+import { isRecord, wellFormed, truncateText } from "./validation.js";
 
 const errorCodes = [
   "RAZORPAY_INVALID_ARGUMENT",
@@ -23,68 +23,82 @@ const errorCodes = [
 
 export type RazorpayErrorCode = (typeof errorCodes)[number];
 
-function isRazorpayErrorCode(value: unknown): value is RazorpayErrorCode {
-  return typeof value === "string" && errorCodes.some((code) => code === value);
-}
+const errorMessages = {
+  RAZORPAY_INVALID_ARGUMENT: "An argument is invalid, missing or out of bounds.",
+  RAZORPAY_INVALID_RESPONSE: "The provider response is invalid or a required mirror is missing.",
+  RAZORPAY_NOT_CONFIGURED: "Razorpay API credentials are missing.",
+  RAZORPAY_LIVE_KEY_TEST_MODE: "Test mode cannot use a live Razorpay key.",
+  RAZORPAY_MODE_MISMATCH: "The operation and mirror have different modes.",
+  RAZORPAY_CUSTOMER_CONFLICT: "The customer belongs to another app user.",
+  RAZORPAY_IDEMPOTENCY_REQUIRED: "Refund creation requires an idempotency key or receipt.",
+  RAZORPAY_IDEMPOTENCY_CONFLICT:
+    "The idempotency key or receipt identifies a different create request.",
+  RAZORPAY_IDEMPOTENCY_PENDING:
+    "The create outcome is pending or unknown; reconcile before retrying.",
+  RAZORPAY_NOT_FOUND: "The required mirror does not exist.",
+  RAZORPAY_PROVIDER_REJECTED: "Razorpay rejected the request.",
+  RAZORPAY_HTTP_ERROR: "Razorpay returned an HTTP failure with an uncertain outcome.",
+  RAZORPAY_NETWORK_ERROR: "The Razorpay network request failed with an uncertain outcome.",
+  RAZORPAY_WEBHOOK_SECRET_MISSING: "The webhook signing secret is missing.",
+  RAZORPAY_INVALID_WEBHOOK_SIGNATURE: "The webhook signature is invalid.",
+  RAZORPAY_MALFORMED_WEBHOOK: "The webhook body or envelope is invalid or exceeds the size limit.",
+  RAZORPAY_INVALID_ENTITY: "The webhook entities or their relationships are invalid.",
+} as const satisfies Record<RazorpayErrorCode, string>;
 
 export type RazorpayErrorData = {
   code: RazorpayErrorCode;
   message: string;
-  retryable?: boolean;
+  providerStatus?: number;
+  providerCode?: string;
 };
-
 export type RazorpayError = ConvexError<RazorpayErrorData>;
 
 export function isRazorpayError(error: unknown): error is RazorpayError {
   if (!(error instanceof ConvexError) || !isRecord(error.data)) return false;
+  const data = error.data;
   return (
-    isRazorpayErrorCode(error.data.code) &&
-    typeof error.data.message === "string" &&
-    (error.data.retryable === undefined || typeof error.data.retryable === "boolean")
+    errorCodes.some((code) => code === data.code) &&
+    typeof data.message === "string" &&
+    (data.providerStatus === undefined ||
+      (typeof data.providerStatus === "number" &&
+        Number.isInteger(data.providerStatus) &&
+        data.providerStatus >= 100 &&
+        data.providerStatus <= 599)) &&
+    (data.providerCode === undefined ||
+      (typeof data.providerCode === "string" &&
+        data.providerCode.length <= 64 &&
+        wellFormed(data.providerCode))) &&
+    Object.keys(data).every((key) =>
+      ["code", "message", "providerStatus", "providerCode"].includes(key),
+    )
   );
 }
 
 export function razorpayError(
   code: RazorpayErrorCode,
-  message: string,
-  retryable?: boolean,
+  provider?: { providerStatus: number; providerCode?: string },
 ): RazorpayError {
-  return new ConvexError({ code, message, ...(retryable === undefined ? {} : { retryable }) });
+  return new ConvexError({ code, message: errorMessages[code], ...provider });
 }
 
-export function retryableStatus(
-  statusCode: number,
-  idempotent: boolean,
-  description = "",
-  refund = false,
-): boolean {
-  if (!idempotent) return false;
-  return (
-    statusCode === 429 ||
-    statusCode >= 500 ||
-    (refund && statusCode === 409) ||
-    (statusCode === 400 && /concurrent operation in progress/i.test(description))
-  );
-}
-
-export function classifyProviderError(
-  statusCode: number,
-  body: unknown,
-  idempotent: boolean,
-  refund = false,
-): RazorpayErrorData {
-  const error = isRecord(body) ? body.error : null;
-  const fields = isRecord(error) ? error : {};
-  const description =
-    typeof fields.description === "string" && fields.description.length > 0
-      ? fields.description
-      : `Razorpay request failed (${statusCode})`;
+export function classifyProviderError(statusCode: number, body: unknown): RazorpayErrorData {
+  const fields = isRecord(body) && isRecord(body.error) ? body.error : {};
+  const concurrent =
+    typeof fields.description === "string" &&
+    /concurrent operation in progress/i.test(fields.description);
   const definitive =
-    statusCode >= 400 && statusCode < 500 && statusCode !== 409 && statusCode !== 429;
+    statusCode >= 400 &&
+    statusCode < 500 &&
+    statusCode !== 409 &&
+    statusCode !== 429 &&
+    !concurrent;
+  const code = definitive ? "RAZORPAY_PROVIDER_REJECTED" : "RAZORPAY_HTTP_ERROR";
+  const providerCode = typeof fields.code === "string" ? truncateText(fields.code, 64) : undefined;
   return {
-    code: definitive ? "RAZORPAY_PROVIDER_REJECTED" : "RAZORPAY_HTTP_ERROR",
-    message: description,
-    retryable: retryableStatus(statusCode, idempotent, description, refund),
+    code,
+    message: errorMessages[code],
+    providerStatus: statusCode,
+    ...(providerCode === undefined ? {} : { providerCode }),
   };
 }
 
@@ -96,9 +110,9 @@ export function isDefinitiveNoCreate(error: unknown): boolean {
   return isRazorpayError(error) && error.data.code === "RAZORPAY_PROVIDER_REJECTED";
 }
 
-export function getOrThrow<T>(value: T | null | undefined, message: string): T {
+export function getOrThrow<T>(value: T | null | undefined): T {
   if (value === null || value === undefined) {
-    throw razorpayError("RAZORPAY_INVALID_RESPONSE", message);
+    throw razorpayError("RAZORPAY_INVALID_RESPONSE");
   }
   return value;
 }

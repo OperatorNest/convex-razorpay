@@ -53,6 +53,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           notes: Record<string, string>;
           raw: any;
           razorpayId: string;
+          requestFingerprint?: string;
           testMode: boolean;
           updatedAtProvider: number;
           userId?: string;
@@ -83,6 +84,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           notes: Record<string, string>;
           raw: any;
           razorpayId: string;
+          requestFingerprint?: string;
           testMode: boolean;
           updatedAtProvider: number;
           userId?: string;
@@ -107,6 +109,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           notes: Record<string, string>;
           raw: any;
           razorpayId: string;
+          requestFingerprint?: string;
           testMode: boolean;
           updatedAtProvider: number;
           userId?: string;
@@ -116,7 +119,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       getByUser: FunctionReference<
         "query",
         "internal",
-        { userId: string },
+        { testMode?: boolean; userId: string },
         {
           _creationTime: number;
           _id: string;
@@ -131,6 +134,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           notes: Record<string, string>;
           raw: any;
           razorpayId: string;
+          requestFingerprint?: string;
           testMode: boolean;
           updatedAtProvider: number;
           userId?: string;
@@ -166,6 +170,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           notes: Record<string, string>;
           raw: any;
           razorpayId: string;
+          requestFingerprint?: string;
           testMode: boolean;
           updatedAtProvider: number;
           userId?: string;
@@ -177,7 +182,11 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       release: FunctionReference<
         "mutation",
         "internal",
-        { key: string; resource: "order" | "plan" | "subscription" },
+        {
+          key: string;
+          resource: "order" | "plan" | "subscription";
+          testMode?: boolean;
+        },
         boolean,
         Name
       >;
@@ -214,6 +223,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             idempotencyKey?: string;
             metadata?: Record<string, string>;
             notes: Record<string, string>;
+            partialPayment: boolean;
             raw: any;
             rawStatus?: string;
             razorpayId: string;
@@ -244,6 +254,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           idempotencyKey?: string;
           metadata?: Record<string, string>;
           notes: Record<string, string>;
+          partialPayment: boolean;
           raw: any;
           rawStatus?: string;
           razorpayId: string;
@@ -275,6 +286,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           errorReason?: string;
           errorSource?: string;
           errorStep?: string;
+          externalId?: string;
           fee?: number;
           international?: boolean;
           invoiceId?: string;
@@ -290,6 +302,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           tax?: number;
           testMode: boolean;
           updatedAtProvider: number;
+          userId?: string;
           verified: boolean;
         }>,
         Name
@@ -297,7 +310,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       get: FunctionReference<
         "query",
         "internal",
-        { orderId: string },
+        { orderId: string; testMode?: boolean },
         {
           _creationTime: number;
           _id: string;
@@ -312,6 +325,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           idempotencyKey?: string;
           metadata?: Record<string, string>;
           notes: Record<string, string>;
+          partialPayment: boolean;
           raw: any;
           rawStatus?: string;
           razorpayId: string;
@@ -350,6 +364,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           errorReason?: string;
           errorSource?: string;
           errorStep?: string;
+          externalId?: string;
           fee?: number;
           international?: boolean;
           invoiceId?: string;
@@ -365,6 +380,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           tax?: number;
           testMode: boolean;
           updatedAtProvider: number;
+          userId?: string;
           verified: boolean;
         },
         Name
@@ -389,6 +405,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           errorReason?: string;
           errorSource?: string;
           errorStep?: string;
+          externalId?: string;
           fee?: number;
           international?: boolean;
           invoiceId?: string;
@@ -404,6 +421,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           tax?: number;
           testMode: boolean;
           updatedAtProvider: number;
+          userId?: string;
           verified: boolean;
         },
         Name
@@ -428,6 +446,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           errorReason?: string;
           errorSource?: string;
           errorStep?: string;
+          externalId?: string;
           fee?: number;
           international?: boolean;
           invoiceId?: string;
@@ -443,6 +462,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           tax?: number;
           testMode: boolean;
           updatedAtProvider: number;
+          userId?: string;
           verified: boolean;
         }>,
         Name
@@ -450,7 +470,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       listForOrder: FunctionReference<
         "query",
         "internal",
-        { limit?: number; orderId: string },
+        { limit?: number; orderId: string; testMode?: boolean },
         Array<{
           _creationTime: number;
           _id: string;
@@ -467,6 +487,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           errorReason?: string;
           errorSource?: string;
           errorStep?: string;
+          externalId?: string;
           fee?: number;
           international?: boolean;
           invoiceId?: string;
@@ -482,6 +503,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           tax?: number;
           testMode: boolean;
           updatedAtProvider: number;
+          userId?: string;
           verified: boolean;
         }>,
         Name
@@ -677,6 +699,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           externalId?: string;
           hasScheduledChanges: boolean;
           idempotencyKey?: string;
+          lastWebhookCreatedAtProvider?: number;
           metadata?: Record<string, string>;
           notes: Record<string, string>;
           paidCount: number;
@@ -730,6 +753,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           externalId?: string;
           hasScheduledChanges: boolean;
           idempotencyKey?: string;
+          lastWebhookCreatedAtProvider?: number;
           metadata?: Record<string, string>;
           notes: Record<string, string>;
           paidCount: number;
@@ -769,6 +793,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           externalId?: string;
           hasScheduledChanges: boolean;
           idempotencyKey?: string;
+          lastWebhookCreatedAtProvider?: number;
           metadata?: Record<string, string>;
           notes: Record<string, string>;
           paidCount: number;
@@ -792,7 +817,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       getForUser: FunctionReference<
         "query",
         "internal",
-        { statuses?: Array<string>; userId: string },
+        { statuses?: Array<string>; testMode?: boolean; userId: string },
         {
           _creationTime: number;
           _id: string;
@@ -808,6 +833,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           externalId?: string;
           hasScheduledChanges: boolean;
           idempotencyKey?: string;
+          lastWebhookCreatedAtProvider?: number;
           metadata?: Record<string, string>;
           notes: Record<string, string>;
           paidCount: number;
@@ -831,7 +857,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       listByUser: FunctionReference<
         "query",
         "internal",
-        { limit?: number; userId: string },
+        { limit?: number; testMode?: boolean; userId: string },
         Array<{
           _creationTime: number;
           _id: string;
@@ -847,6 +873,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           externalId?: string;
           hasScheduledChanges: boolean;
           idempotencyKey?: string;
+          lastWebhookCreatedAtProvider?: number;
           metadata?: Record<string, string>;
           notes: Record<string, string>;
           paidCount: number;
@@ -886,6 +913,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           externalId?: string;
           hasScheduledChanges: boolean;
           idempotencyKey?: string;
+          lastWebhookCreatedAtProvider?: number;
           metadata?: Record<string, string>;
           notes: Record<string, string>;
           paidCount: number;
@@ -925,6 +953,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           externalId?: string;
           hasScheduledChanges: boolean;
           idempotencyKey?: string;
+          lastWebhookCreatedAtProvider?: number;
           metadata?: Record<string, string>;
           notes: Record<string, string>;
           paidCount: number;
@@ -974,6 +1003,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           externalId?: string;
           hasScheduledChanges: boolean;
           idempotencyKey?: string;
+          lastWebhookCreatedAtProvider?: number;
           metadata?: Record<string, string>;
           notes: Record<string, string>;
           paidCount: number;
@@ -1022,6 +1052,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           errorReason?: string;
           errorSource?: string;
           errorStep?: string;
+          externalId?: string;
           fee?: number;
           international?: boolean;
           invoiceId?: string;
@@ -1037,6 +1068,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           tax?: number;
           testMode: boolean;
           updatedAtProvider: number;
+          userId?: string;
           verified: boolean;
         },
         Name
@@ -1080,6 +1112,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           errorReason?: string;
           errorSource?: string;
           errorStep?: string;
+          externalId?: string;
           fee?: number;
           international?: boolean;
           invoiceId?: string;
@@ -1095,6 +1128,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           tax?: number;
           testMode: boolean;
           updatedAtProvider: number;
+          userId?: string;
           verified: boolean;
         },
         Name

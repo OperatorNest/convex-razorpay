@@ -1,65 +1,43 @@
 # Working in this repository
 
-## Scope
+Read `README.md`, `CONTRIBUTING.md`, relevant `docs/adr/` files and `example/convex/_generated/ai/guidelines.md`. Contributor guides live in `.agents/skills/`.
 
-Read `README.md`, `CONTRIBUTING.md`, and the ADRs in `docs/adr/` for supported behavior and decisions.
+## Boundaries
 
-Read `example/convex/_generated/ai/guidelines.md` for official Convex API guidance. The runtime and dependency rules below apply to this package.
+`src/component/` owns provider transport, trust, mirrors, cron and generated bindings. `src/client/` owns app-facing calls. `src/shared/` is runtime-neutral. `src/test.ts` registers `convex-test`; `example/convex/` exercises the package.
 
-`src/component/` owns the schema, functions, cron, and generated bindings. `src/client/` provides the grouped app-facing `Razorpay` client. `src/shared/` contains runtime-neutral validation and crypto. `src/test.ts` registers the component for `convex-test`; `example/convex/` exercises the installed component.
+Authored `src/` runs in Convex V8 and edge runtimes. Use platform fetch, WebCrypto and generated env; never add `"use node"`, Node built-ins, `Buffer` or `process`. Keep zero runtime dependencies and `convex` as a `^1.46.0` peer. Credentials belong only in component env bound by app reference; never put real credentials in arguments, rows, logs, tests or examples.
 
-Read the contributor guides in `.agents/skills/` when relevant to the change.
+Provider responses and signed webhooks share internal apply mutations. Verify the unchanged raw-body HMAC with the current or previous secret before mirror updates, deduplication and the optional callback execute in one transaction. Reject missing secrets. Only provider-verified data or explicitly selected synthetic operations may change payment state.
 
-## Runtime and security boundaries
+Every mirror stores its mode. Client reads use mode-inclusive indexes; every write rejects an existing opposite-mode row. Client `testMode: false` overrides the env; omission defers to `RAZORPAY_TEST_MODE=true`. Reject `rzp_live_` keys when test mode is enabled. Provider notes cannot settle local claims without an explicit request fingerprint.
 
-Shipped code runs in Convex's default V8 runtime and edge runtimes. Never add `"use node"`, Node built-ins, `Buffer`, or `process` in authored `src/` files. Use platform `fetch`, WebCrypto, and generated `env`. Keep credentials only in component env variables, bind app env by reference, and never pass secrets through public args, tables, logs, tests, or examples. The package has zero runtime dependencies; `convex` is a peer.
+## Functions and errors
 
-Provider responses and signed webhooks use the same internal `apply*` mutations. Webhooks verify HMAC on the raw body, accept current/previous secrets, deduplicate by event id and body hash, then update the mirror and call the optional app callback in one transaction. Reject missing secrets. Only verified provider data may change payment state. Test behavior requires explicit client `testMode: true` or `RAZORPAY_TEST_MODE=true` (an explicit client `false` overrides the env); reject a recognizable live key in test mode. Tag every mirrored row with its mode and refuse test-mode operations on live rows.
+Public functions declare `args` and `returns`. Use `schema.doc` for mirrors and shared validators with `Infer` for shared shapes. Allow `v.any()` only for unindexed provider fields named `raw*`. Reads are bounded and indexed; index names list fields in order joined by `_and_`. Validate page limits before database reads. Queries must not use `Date.now()`; mutations must not fan out unbounded requests. Client calls copy declared arguments explicitly.
 
-Bad: accept `keySecret` as a public mutation argument or update an order from an unsigned webhook. Good: read generated component `env`, verify the raw-body HMAC, then use the internal `apply*` mutation. The client owns app-facing calls; the component owns provider trust.
+Consumer errors come from `razorpayError` in `src/shared/errors.ts`. Maintain one `RAZORPAY_` code list, fixed messages, a complete shape guard and matching README table. Error data is `{ code, message, providerStatus?, providerCode? }`; provider codes are bounded to 64 code units. Never expose descriptions, response bodies or field values in errors, or throw plain `Error` to consumers.
 
-## Query and validator patterns
+## Toolchain and proof
 
-Public functions declare `args` and `returns`. Use `schema.doc("orders")` for a mirrored order and `paginationResultValidator(...)` for pages. Shared shapes come from one validator via `Infer`. `v.any()` is allowed only for provider passthrough fields named `raw*`, which are never indexed. Reads are bounded and index-backed; for example `orders.by_razorpayId` resolves an order by its provider id. Do not use `Date.now()` in queries or large `Promise.all` fan-outs in mutations. Do not edit `_generated/` by hand.
+Use tracked `.mise.toml` with `mise trust && mise install`: Node 24, pnpm 12.9.1, TS6 tooling alias and TS7 native compiler. Preserve strict TypeScript flags, all Convex lint rules at error, Oxfmt, Knip and workspace supply-chain settings. Do not patch dependencies.
 
-## Consumer errors
+Initialize a fresh checkout with `CONVEX_AGENT_MODE=anonymous pnpm exec convex init`, then `pnpm build:codegen`. Never edit `_generated/` by hand; regenerate after schema or function changes and commit tracked output with its inputs. `dist/` is ignored build output.
 
-Consumer-reachable errors must use the single `razorpayError` factory in `src/shared/errors.ts` to construct `ConvexError<{ code, message, retryable? }>`. Error codes retain the `RAZORPAY_` prefix and are documented in the README error-code table. Keep the exported `RazorpayErrorCode` union and `isRazorpayError` guard in sync with those codes. Never throw plain `Error` on consumer-reachable paths.
+Test every public client method. Keep tests beside modules and shared helpers in `src/test-helpers.ts`. Stub fabricated env and provider fetch; restore both after every test. Use `vi.setSystemTime` and restore timers in `afterEach`. Simulator proof does not establish component env binding or real Convex behavior.
 
-## Generated files
+Run affected tests and formatting first. Required checks:
 
-The `src/component/_generated/` and `example/convex/_generated/` bindings are generated output, excluded from authored-source lint rules. Edit their schema/function inputs, regenerate, review the diff, and commit changed tracked generated output with the source change. `dist/` remains ignored build output.
+| Change                              | Checks                                                            |
+| ----------------------------------- | ----------------------------------------------------------------- |
+| Component, schema or shared runtime | `pnpm build:codegen`, `pnpm test`, `pnpm typecheck`, `pnpm smoke` |
+| Client or exports                   | `pnpm build`, `pnpm typecheck`, affected tests, `pnpm test`       |
+| Tooling or repository rules         | `pnpm check`, `pnpm smoke`                                        |
+| Prose                               | `pnpm fmt:check`                                                  |
+| Executable docs                     | Formatting and affected tests; smoke for runtime claims           |
 
-In a fresh checkout, use `CONVEX_AGENT_MODE=anonymous pnpm exec convex init`, then `pnpm build:codegen`. That script generates the component bindings, builds `dist` for the example's config import, and generates example-app bindings. It uses a local anonymous deployment and needs no cloud login.
+`pnpm check` includes formatting, build, lint, typecheck, Knip, source invariants and coverage. Coverage thresholds may hold or rise, never fall. Codegen and smoke use the shared anonymous-backend lock; never terminate another checkout's backend. Smoke uses fabricated credentials, not a provider account.
 
-## Environment and test behavior
+The interactive e2e check requires an attended maintainer test account, never CI or production keys. Start with `pnpm e2e --dry-run`; keep `.env.e2e` ignored and review only redacted fixtures. Never print credentials. Before release, run the production audit and inspect `pnpm pack --dry-run`.
 
-The component declares `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`, `RAZORPAY_WEBHOOK_SECRET_PREVIOUS`, and `RAZORPAY_TEST_MODE`. Missing API credentials fail unless test mode is explicitly selected; webhook verification always needs its secret. Tests stub fabricated env values with `vi.stubEnv` and provider `fetch` with `vi.stubGlobal`, restoring both afterward. `convex-test` is a simulator; it does not prove app env binding or the real runtime.
-
-The end-to-end test is a maintainer-run interactive check with their own provider test account and keys, never CI. Copy `.env.e2e.example` to ignored `.env.e2e` and start with `pnpm e2e --dry-run`, which validates names without network calls. `pnpm e2e:env` loads only the component credentials. The interactive command uses the shared lock and anonymous local backend; review redacted fixtures in `tests/fixtures/e2e` before committing them. Never print or commit credentials or use production accounts.
-
-Every public client method must be exercised by tests. Keep tests beside the modules they cover and shared helpers in `src/test-helpers.ts`, never in a `*.test.ts` file. Use `vi.setSystemTime` instead of real-clock margins and restore timers in `afterEach` after every test.
-
-## Toolchain
-
-Use tracked `.mise.toml` (Node 26, pnpm 12.9.1) with `mise trust && mise install`; if global pnpm is older, use `mise exec -- pnpm ...`. Keep `convex` as a peer at `^1.46.0`. Keep the TS6 tooling alias and TS7 native compiler, strict TypeScript flags, oxlint Convex plugin, Oxfmt, Knip, Vitest coverage, and workspace-level pnpm supply-chain settings aligned with the tracked tool configuration. Do not patch dependencies or generated files by hand.
-
-## Verification by change type
-
-Start with affected tests and formatting, then run the required gate. `pnpm build:codegen` and `pnpm smoke` start or use the anonymous local backend under the shared lock; they cost more than `pnpm test` or `pnpm fmt:check`. Do not run interactive `pnpm e2e` as a routine check; use its documented `--dry-run` first and require an attended maintainer-run session.
-
-| Change                                         | Checks                                                                                       |
-| ---------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| Component functions, schema, or shared runtime | `pnpm build:codegen`, `pnpm test`, `pnpm typecheck`, `pnpm smoke`                            |
-| Client behavior or package exports             | `pnpm build`, `pnpm typecheck`, affected client tests, `pnpm test`                           |
-| Tooling or repository rules                    | `pnpm check`, `pnpm smoke`                                                                   |
-| Prose-only docs                                | `pnpm fmt:check`                                                                             |
-| Executable docs or API claims                  | `pnpm fmt:check`, affected example/client tests; `pnpm smoke` if runtime behavior is claimed |
-
-`pnpm check` runs formatting, build, type-aware lint, typecheck, `pnpm knip`, and coverage-threshold tests. `pnpm smoke` runs the example in the real local Convex runtime, under the shared local lock, with fabricated credentials. Run `pnpm audit --prod --audit-level high` and `pnpm pack --dry-run` before release. The lock coordinates local backend use; do not terminate another repo's backend.
-
-Coverage is a ratchet: the thresholds in `vitest.config.js` may hold or rise, never fall. `pnpm test` enforces the current floor; review threshold changes against the prior commit and add meaningful tests when coverage drops.
-
-## Contribution boundaries
-
-Keep changes within this component and its example. Update docs for public behavior; add an ADR for intentional contract deviations. Treat app authentication, authorization, pricing, and fulfillment as app responsibilities. Report exact checks and distinguish local proof from provider or deployed behavior. Publishing, pushing, deploying, and registry submissions require explicit authorization.
+Update docs for public behavior and ADRs for contract changes. App authentication, authorization, trusted prices and fulfillment remain app responsibilities. Report commands and exit codes; distinguish simulator, local runtime and provider evidence. Publishing, pushing, deploying and registry submissions require explicit authorization.

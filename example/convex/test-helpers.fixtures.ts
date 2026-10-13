@@ -8,7 +8,6 @@ import {
 import { components, internal } from "./_generated/api.js";
 import { internalAction, internalMutation } from "./_generated/server.js";
 
-/** Fixtures used only by the example app's convex-test suite. */
 export const onEventFailingFixture = internalMutation({
   args: webhookEventValidator,
   returns: v.null(),

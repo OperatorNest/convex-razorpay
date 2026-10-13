@@ -12,6 +12,7 @@ export default defineSchema({
   orders: defineTable({
     razorpayId: v.string(),
     amount: v.number(),
+    partialPayment: v.boolean(),
     amountPaid: v.number(),
     amountDue: v.number(),
     currency: v.string(),
@@ -29,7 +30,9 @@ export default defineSchema({
     createdThroughComponent: v.optional(v.boolean()),
   })
     .index("by_razorpayId", ["razorpayId"])
-    .index("by_idempotencyKey", ["idempotencyKey"]),
+    .index("by_testMode_and_razorpayId", ["testMode", "razorpayId"])
+    .index("by_testMode_and_receipt", ["testMode", "receipt"])
+    .index("by_idempotencyKey_and_testMode", ["idempotencyKey", "testMode"]),
   payments: defineTable({
     razorpayId: v.string(),
     orderId: v.optional(v.string()),
@@ -55,6 +58,8 @@ export default defineSchema({
     errorReason: v.optional(v.string()),
     errorSource: v.optional(v.string()),
     errorStep: v.optional(v.string()),
+    userId: v.optional(v.string()),
+    externalId: v.optional(v.string()),
     notes,
     createdAt: v.number(),
     updatedAtProvider: v.number(),
@@ -62,7 +67,7 @@ export default defineSchema({
     testMode: v.boolean(),
   })
     .index("by_razorpayId", ["razorpayId"])
-    .index("by_orderId", ["orderId"])
+    .index("by_orderId_and_testMode", ["orderId", "testMode"])
     .index("by_testMode", ["testMode"]),
   refunds: defineTable({
     razorpayId: v.string(),
@@ -93,6 +98,7 @@ export default defineSchema({
     email: v.optional(v.string()),
     contact: v.optional(v.string()),
     gstin: v.optional(v.string()),
+    requestFingerprint: v.optional(v.string()),
     notes,
     idempotencyKey: v.optional(v.string()),
     createdAt: v.number(),
@@ -102,7 +108,7 @@ export default defineSchema({
     testMode: v.boolean(),
   })
     .index("by_razorpayId", ["razorpayId"])
-    .index("by_userId", ["userId"])
+    .index("by_testMode_and_userId", ["testMode", "userId"])
     .index("by_idempotencyKey", ["idempotencyKey"]),
   plans: defineTable({
     razorpayId: v.string(),
@@ -121,7 +127,7 @@ export default defineSchema({
     testMode: v.boolean(),
   })
     .index("by_razorpayId", ["razorpayId"])
-    .index("by_idempotencyKey", ["idempotencyKey"])
+    .index("by_idempotencyKey_and_testMode", ["idempotencyKey", "testMode"])
     .index("by_testMode", ["testMode"]),
   subscriptions: defineTable({
     razorpayId: v.string(),
@@ -147,17 +153,17 @@ export default defineSchema({
     idempotencyKey: v.optional(v.string()),
     createdAt: v.number(),
     updatedAtProvider: v.number(),
+    lastWebhookCreatedAtProvider: v.optional(v.number()),
     ...linkage,
     raw: v.any(),
     testMode: v.boolean(),
     createdThroughComponent: v.optional(v.boolean()),
   })
     .index("by_razorpayId", ["razorpayId"])
-    // Distinct sort orders serve recent-by-user reads and status-priority lookups.
-    // eslint-disable-next-line @convex-dev/no-duplicate-indexes
-    .index("by_userId", ["userId"])
-    .index("by_userId_and_status", ["userId", "status"])
-    .index("by_idempotencyKey", ["idempotencyKey"]),
+
+    .index("by_testMode_and_userId", ["testMode", "userId"])
+    .index("by_userId_and_testMode_and_status", ["userId", "testMode", "status"])
+    .index("by_idempotencyKey_and_testMode", ["idempotencyKey", "testMode"]),
   webhookEvents: defineTable({
     eventId: v.string(),
     event: v.string(),
@@ -174,6 +180,7 @@ export default defineSchema({
     .index("by_receivedAt", ["receivedAt"]),
   idempotencyRequests: defineTable({
     resource: v.union(v.literal("order"), v.literal("plan"), v.literal("subscription")),
+    testMode: v.boolean(),
     key: v.string(),
     fingerprint: v.string(),
     status: v.union(v.literal("pending"), v.literal("completed"), v.literal("failed")),
@@ -182,6 +189,6 @@ export default defineSchema({
     createdAt: v.number(),
     settledAt: v.optional(v.number()),
   })
-    .index("by_resource_and_key", ["resource", "key"])
+    .index("by_resource_and_testMode_and_key", ["resource", "testMode", "key"])
     .index("by_status_and_settledAt", ["status", "settledAt"]),
 });

@@ -6,7 +6,7 @@ import schema from "./schema.js";
 import { hmacSha256Hex } from "../shared/crypto.js";
 
 const modules = import.meta.glob("./**/*.ts");
-// Public spec test vector and synthetic webhook fixture; neither is a credential.
+
 const webhookFixture = "whsec_runtime_fixture";
 const checkoutFixture = "EnLs21M47BllR3X8PSFtjtbd";
 
@@ -25,7 +25,7 @@ afterEach(() => {
   restoreRazorpayTestState();
 });
 
-test("idempotency retention deletes settled claims in batches and keeps pending or recent claims", async () => {
+test("idempotency retention deletes old failed claims and preserves every completed or pending claim", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-10-04T00:00:00Z"));
   const t = convexTest(schema, modules);
@@ -34,6 +34,7 @@ test("idempotency retention deletes settled claims in batches and keeps pending 
   await t.run(async (ctx) => {
     for (let i = 0; i < 21; i++) {
       await ctx.db.insert("idempotencyRequests", {
+        testMode: false,
         resource: "plan",
         key: `old-completed-${i}`,
         fingerprint: `fingerprint-${i}`,
@@ -43,6 +44,7 @@ test("idempotency retention deletes settled claims in batches and keeps pending 
       });
     }
     await ctx.db.insert("idempotencyRequests", {
+      testMode: false,
       resource: "subscription",
       key: "old-failed",
       fingerprint: "failed",
@@ -51,6 +53,7 @@ test("idempotency retention deletes settled claims in batches and keeps pending 
       settledAt: old,
     });
     await ctx.db.insert("idempotencyRequests", {
+      testMode: false,
       resource: "plan",
       key: "old-pending",
       fingerprint: "pending",
@@ -58,6 +61,7 @@ test("idempotency retention deletes settled claims in batches and keeps pending 
       createdAt: old,
     });
     await ctx.db.insert("idempotencyRequests", {
+      testMode: false,
       resource: "plan",
       key: "recent-completed",
       fingerprint: "recent",
@@ -70,19 +74,20 @@ test("idempotency retention deletes settled claims in batches and keeps pending 
     await t.mutation(internal.idempotency.cleanupScheduled, {
       before: now - 30 * 24 * 60 * 60_000,
     }),
-  ).toBe(20);
-  const remaining = await t.run((ctx) => ctx.db.query("idempotencyRequests").take(10));
-  expect(remaining).toHaveLength(4);
+  ).toBe(1);
+  const remaining = await t.run((ctx) => ctx.db.query("idempotencyRequests").take(100));
+  expect(remaining).toHaveLength(23);
   expect(remaining.map((row) => row.key)).toEqual(
-    expect.arrayContaining(["old-failed", "old-pending", "recent-completed"]),
+    expect.arrayContaining(["old-pending", "recent-completed"]),
   );
   expect(
     await t.mutation(internal.idempotency.cleanupScheduled, {
       before: now - 30 * 24 * 60 * 60_000,
     }),
-  ).toBe(2);
-  const retained = await t.run((ctx) => ctx.db.query("idempotencyRequests").take(10));
-  expect(retained.map((row) => row.key).toSorted()).toEqual(["old-pending", "recent-completed"]);
+  ).toBe(0);
+  const retained = await t.run((ctx) => ctx.db.query("idempotencyRequests").take(100));
+  expect(retained).toEqual(remaining);
+  expect(retained.some((row) => row.key === "old-failed")).toBe(false);
 });
 
 test("listForOrder returns newest indexed payments first", async () => {
@@ -336,36 +341,21 @@ test("signed malformed webhook is recorded as failed without raw body", async ()
   expect(events[0]).not.toHaveProperty("raw");
 });
 
-test("subscription can recover from halted but a terminal state never revives", async () => {
+test("subscription webhooks recover from halted but cannot revive a terminal state", async () => {
+  vi.stubEnv("RAZORPAY_WEBHOOK_SECRET", webhookFixture);
   const t = convexTest(schema, modules);
-  await t.mutation(internal.mutations.putSubscription, {
-    raw: subscription("halted"),
-    observedAt: 1000,
-  });
-  expect(
-    (
-      await t.mutation(internal.mutations.putSubscription, {
-        raw: subscription("active"),
-        observedAt: 2000,
-      })
-    ).status,
-  ).toBe("active");
-  expect(
-    (
-      await t.mutation(internal.mutations.putSubscription, {
-        raw: subscription("cancelled"),
-        observedAt: 3000,
-      })
-    ).status,
-  ).toBe("cancelled");
-  expect(
-    (
-      await t.mutation(internal.mutations.putSubscription, {
-        raw: subscription("active"),
-        observedAt: 4000,
-      })
-    ).status,
-  ).toBe("cancelled");
+  for (const [status, expected, timestamp] of [
+    ["halted", "halted", 1],
+    ["active", "active", 2],
+    ["cancelled", "cancelled", 3],
+    ["active", "cancelled", 4],
+  ] as const) {
+    const body = envelope("subscription.updated", "subscription", subscription(status), timestamp);
+    expect((await ingest(t, `evt_subscription_${timestamp}`, body)).status).toBe("processed");
+    expect(await t.run((ctx) => ctx.db.query("subscriptions").first())).toMatchObject({
+      status: expected,
+    });
+  }
 });
 
 test("test refunds update captured balance once and reject over-refund", async () => {
@@ -403,8 +393,11 @@ test("test refunds update captured balance once and reject over-refund", async (
       idempotencyKey: "third_refund_key",
       testMode: true,
     }),
-  ).rejects.toThrow("Refund exceeds");
-  const mirror = await t.query(api.payments.listForOrder, { orderId: "order_fixture" });
+  ).rejects.toThrow("An argument is invalid, missing or out of bounds.");
+  const mirror = await t.query(api.payments.listForOrder, {
+    orderId: "order_fixture",
+    testMode: true,
+  });
   expect(mirror[0]).toMatchObject({
     status: "refunded",
     amountRefunded: 5000,
@@ -451,7 +444,7 @@ test("checkout signature verifies identity and records authorization without cap
   };
   await expect(
     t.action(api.verification.checkout, { ...signed, signature: "0".repeat(64) }),
-  ).rejects.toThrow("Invalid checkout signature");
+  ).rejects.toThrow("An argument is invalid, missing or out of bounds.");
   const result = await t.action(api.verification.checkout, signed);
   expect(result).toMatchObject({ verified: true, status: "authorized", captured: false });
 });
@@ -521,9 +514,9 @@ test("test mode customer, plan, and subscription lifecycle stays local and linke
   expect((await t.action(api.customers.getOrCreate, customerArgs)).razorpayId).toBe(
     customer.razorpayId,
   );
-  expect((await t.query(api.customers.getByUser, { userId: "user_alice" }))?.razorpayId).toBe(
-    customer.razorpayId,
-  );
+  expect(
+    (await t.query(api.customers.getByUser, { userId: "user_alice", testMode: true }))?.razorpayId,
+  ).toBe(customer.razorpayId);
   expect(
     (
       await t.action(api.customers.edit, {
@@ -560,10 +553,13 @@ test("test mode customer, plan, and subscription lifecycle stays local and linke
     (await t.action(api.subscriptions.fetch, { subscriptionId: sub.razorpayId, testMode: true }))
       .status,
   ).toBe("created");
-  expect((await t.query(api.subscriptions.getForUser, { userId: "user_alice" }))?.razorpayId).toBe(
-    sub.razorpayId,
-  );
-  expect(await t.query(api.subscriptions.listByUser, { userId: "user_alice" })).toHaveLength(1);
+  expect(
+    (await t.query(api.subscriptions.getForUser, { userId: "user_alice", testMode: true }))
+      ?.razorpayId,
+  ).toBe(sub.razorpayId);
+  expect(
+    await t.query(api.subscriptions.listByUser, { userId: "user_alice", testMode: true }),
+  ).toHaveLength(1);
   await t.mutation(internal.mutations.putSubscription, {
     raw: {
       ...subscription("active"),
@@ -573,7 +569,8 @@ test("test mode customer, plan, and subscription lifecycle stays local and linke
       paid_count: 0,
       remaining_count: 12,
     },
-    observedAt: sub.updatedAtProvider + 1,
+    observedAt: sub.updatedAtProvider,
+    testMode: true,
   });
   const paused = await t.action(api.subscriptions.pause, {
     subscriptionId: sub.razorpayId,

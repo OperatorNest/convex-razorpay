@@ -72,10 +72,10 @@ async function ingest(t: Harness, event: string, payload: unknown) {
 const invalidEntity = { status: "failed", errorCode: "RAZORPAY_INVALID_ENTITY" };
 const counts = (t: Harness) =>
   t.run(async (ctx) => ({
-    orders: (await ctx.db.query("orders").collect()).length,
-    payments: (await ctx.db.query("payments").collect()).length,
-    refunds: (await ctx.db.query("refunds").collect()).length,
-    subscriptions: (await ctx.db.query("subscriptions").collect()).length,
+    orders: (await ctx.db.query("orders").take(1000)).length,
+    payments: (await ctx.db.query("payments").take(1000)).length,
+    refunds: (await ctx.db.query("refunds").take(1000)).length,
+    subscriptions: (await ctx.db.query("subscriptions").take(1000)).length,
   }));
 
 test("mismatched webhook entity relationships fail without mirroring anything", async () => {
@@ -123,7 +123,7 @@ test("a subscription event links its payment to the subscription and invoice", a
     invoiceId: "inv_rel",
     testMode: false,
   });
-  // A payment that names its own subscription and invoice keeps them.
+
   expect(
     await ingest(t, "subscription.charged", {
       subscription: { entity: { ...subscription, id: "sub_own" } },

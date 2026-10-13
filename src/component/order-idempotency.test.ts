@@ -60,14 +60,14 @@ test("a reused order key with any different request is a conflict, never a retur
   await conflict(t.action(api.orders.create, { ...args, partialPayment: true }));
   const { userId: _omitted, ...withoutUser } = args;
   await conflict(t.action(api.orders.create, withoutUser));
-  expect(await t.run((ctx) => ctx.db.query("orders").collect())).toHaveLength(1);
+  expect(await t.run((ctx) => ctx.db.query("orders").take(1000))).toHaveLength(1);
 });
 
 test("a live order retry returns the mirror and posts exactly once", async () => {
   const t = convexTest(schema, modules);
   const fetch = vi.fn(async (_url: string, _init: RequestInit) =>
     Response.json(
-      await providerOrder({ notes: { userId: "u1", operatornestIdempotencyKey: key } }),
+      await providerOrder({ notes: { operatornestUserId: "u1", operatornestIdempotencyKey: key } }),
     ),
   );
   vi.stubGlobal("fetch", fetch);
@@ -84,7 +84,7 @@ test("a live order retry returns the mirror and posts exactly once", async () =>
   expect(fetch).toHaveBeenCalledTimes(1);
   const init = fetch.mock.calls[0]?.[1] as RequestInit;
   const body = JSON.parse(init.body as string);
-  expect(body.notes).toEqual({ userId: "u1", operatornestIdempotencyKey: key });
+  expect(body.notes).toEqual({ operatornestUserId: "u1", operatornestIdempotencyKey: key });
   expect(body.receipt).toMatch(/^rcpt_[0-9a-f]{35}$/);
 });
 
@@ -112,10 +112,10 @@ test("concurrent creates with one key are serialized by the claim", async () => 
     reason: { data: { code: "RAZORPAY_IDEMPOTENCY_PENDING" } },
   });
   expect(fetch).toHaveBeenCalledTimes(1);
-  // After the winner completes, the key resolves to the same single mirror.
+
   const again = await t.action(api.orders.create, base);
   expect(again.order.razorpayId).toBe("order_provider_1");
-  expect(await t.run((ctx) => ctx.db.query("orders").collect())).toHaveLength(1);
+  expect(await t.run((ctx) => ctx.db.query("orders").take(1000))).toHaveLength(1);
   expect(fetch).toHaveBeenCalledTimes(1);
 });
 
@@ -138,12 +138,12 @@ test("an ambiguous POST /orders stays reserved, then reconciles by receipt witho
   await expect(t.action(api.orders.create, base)).rejects.toMatchObject({
     data: { code: "RAZORPAY_NETWORK_ERROR" },
   });
-  // Reserved: the outcome is unknown, so a retry must not POST again.
+
   await expect(t.action(api.orders.create, base)).rejects.toMatchObject({
     data: { code: "RAZORPAY_IDEMPOTENCY_PENDING" },
   });
   expect(fetch).toHaveBeenCalledTimes(1);
-  // A different request under the pending key is a conflict, not a pending hint.
+
   await conflict(t.action(api.orders.create, { ...base, amount: 60000 }));
 
   vi.setSystemTime(new Date("2026-10-04T00:11:00Z"));
@@ -161,7 +161,7 @@ test("an ambiguous POST /orders stays reserved, then reconciles by receipt witho
   expect(fetch).toHaveBeenCalledTimes(2);
 });
 
-test("reconciliation that finds nothing posts again; a definitive rejection frees the key", async () => {
+test("unresolved reconciliation requires explicit release before a definitive rejection can free the key", async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date("2026-10-04T00:00:00Z"));
   const t = convexTest(schema, modules);
@@ -183,13 +183,17 @@ test("reconciliation that finds nothing posts again; a definitive rejection free
   vi.setSystemTime(new Date("2026-10-04T00:11:00Z"));
   mode = "reject";
   await expect(t.action(api.orders.create, base)).rejects.toMatchObject({
+    data: { code: "RAZORPAY_IDEMPOTENCY_PENDING" },
+  });
+  expect(await t.mutation(api.idempotency.release, { resource: "order", key })).toBe(true);
+  await expect(t.action(api.orders.create, base)).rejects.toMatchObject({
     data: { code: "RAZORPAY_PROVIDER_REJECTED" },
   });
-  // Definitive failure: the key is free immediately, no waiting and no pending error.
+
   mode = "ok";
   expect((await t.action(api.orders.create, base)).order.razorpayId).toBe("order_provider_1");
   const methods = fetch.mock.calls.map(([, init]) => init.method);
-  expect(methods).toEqual(["POST", "GET", "POST", "POST"]);
+  expect(methods).toEqual(["POST", "GET", "POST", "GET", "POST"]);
 });
 
 test("a duplicate-receipt rejection adopts only the provably identical order", async () => {
@@ -198,7 +202,9 @@ test("a duplicate-receipt rejection adopts only the provably identical order", a
     { error: { code: "BAD_REQUEST_ERROR", description: "Same receipt already exists" } },
     { status: 400 },
   );
-  const adopted = await providerOrder({ notes: { userId: "u1", operatornestIdempotencyKey: key } });
+  const adopted = await providerOrder({
+    notes: { operatornestUserId: "u1", operatornestIdempotencyKey: key },
+  });
   let existing: unknown = adopted;
   const fetch = vi.fn(async (_url: string, init: RequestInit) =>
     init.method === "POST"
@@ -209,9 +215,8 @@ test("a duplicate-receipt rejection adopts only the provably identical order", a
   const result = await t.action(api.orders.create, { ...base, userId: "u1" });
   expect(result.order.razorpayId).toBe("order_provider_1");
 
-  // Same receipt but a different owner or key: conflict, and the key is released.
   existing = await providerOrder({ notes: { userId: "someone_else" } });
-  await conflict(
+  await expect(
     t.action(api.orders.create, {
       amount: 50000,
       currency: "INR",
@@ -219,7 +224,7 @@ test("a duplicate-receipt rejection adopts only the provably identical order", a
       receipt: adopted.receipt,
       userId: "u1",
     }),
-  );
+  ).rejects.toMatchObject({ data: { code: "RAZORPAY_PROVIDER_REJECTED" } });
 });
 
 test("a reused refund key with a different request is a conflict in both modes", async () => {
@@ -249,7 +254,7 @@ test("a reused refund key with a different request is a conflict in both modes",
   await conflict(t.action(api.refunds.create, { ...args, amount: 200 }));
   await conflict(t.action(api.refunds.create, { ...args, notes: { why: "other" } }));
   await conflict(t.action(api.refunds.create, { ...args, userId: "user_x" }));
-  // The in-mutation guard (race path) reports the same code.
+
   await conflict(
     t.mutation(internal.mutations.putTestRefund, {
       refundId: "rfnd_test_other",

@@ -2,7 +2,6 @@ import { v } from "convex/values";
 import { internalMutation } from "./_generated/server.js";
 import { webhookEventValidator } from "../../src/shared/validators.js";
 
-/** Example transactional notification callback. */
 export const onEvent = internalMutation({
   args: webhookEventValidator,
   returns: v.null(),

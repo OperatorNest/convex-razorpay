@@ -13,6 +13,7 @@ import {
   requestProvider,
 } from "./provider.js";
 import {
+  boundedString,
   deterministicTestId,
   linkedNotes,
   omitUndefined,
@@ -56,16 +57,18 @@ export const create = action({
   handler: async (ctx, args): Promise<Doc<"plans">> => {
     validateIdempotencyKey(args.idempotencyKey);
     if (!Number.isSafeInteger(args.interval) || args.interval < (args.period === "daily" ? 7 : 1))
-      throw razorpayError("RAZORPAY_INVALID_ARGUMENT", "Invalid plan interval");
+      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     validateAmount(args.item.amount, 100);
     validateCurrency(args.item.currency);
-    if (!args.item.name) throw razorpayError("RAZORPAY_INVALID_ARGUMENT", "Plan name is required");
+    boundedString(args.item.name, 256);
+    if (args.item.description !== undefined) boundedString(args.item.description, 4096);
     const testMode = isTestMode(args.testMode);
     const notes = validateNotes({
       ...linkedNotes(args.notes, args.userId, args.externalId, args.metadata),
       ...(args.idempotencyKey ? { [idempotencyNote]: args.idempotencyKey } : {}),
     });
     const fingerprint = stableStringify({
+      testMode,
       period: args.period,
       interval: args.interval,
       item: args.item,
@@ -77,14 +80,15 @@ export const create = action({
         resource: "plan",
         key: args.idempotencyKey,
         fingerprint,
+        testMode,
       });
       if (claim === "completed") {
         const existing = await ctx.runQuery(internal.mutations.planByKey, {
           key: args.idempotencyKey,
+          testMode,
         });
-        if (!existing)
-          throw razorpayError("RAZORPAY_NOT_FOUND", "Completed plan claim has no mirror");
-        assertModeMatches(existing, testMode, "plan");
+        if (!existing) throw razorpayError("RAZORPAY_NOT_FOUND");
+        assertModeMatches(existing, testMode);
         return existing;
       }
       shouldReconcile = claim === "reconcile";
@@ -93,7 +97,7 @@ export const create = action({
     if (testMode) {
       raw = {
         id: await deterministicTestId("plan", [
-          args.idempotencyKey ?? args.item.name,
+          args.idempotencyKey ?? crypto.randomUUID(),
           args.period,
           args.interval,
           args.item.amount,
@@ -107,12 +111,9 @@ export const create = action({
       };
     } else {
       if (shouldReconcile && args.idempotencyKey) {
-        const reconciledRaw = await findByIdempotencyKey("plan", args.idempotencyKey);
-        if (reconciledRaw) {
-          raw = reconciledRaw;
-        }
+        raw = await findByIdempotencyKey("plan", args.idempotencyKey);
       }
-      if (raw === null || raw === undefined) {
+      if (raw === undefined) {
         try {
           raw = await requestProvider("POST", "/plans", {
             body: { period: args.period, interval: args.interval, item: args.item, notes },
@@ -123,6 +124,7 @@ export const create = action({
               resource: "plan",
               key: args.idempotencyKey,
               fingerprint,
+              testMode,
               errorCode: providerErrorCode(error),
             });
           }
@@ -152,15 +154,14 @@ export const fetch = action({
   handler: async (ctx, { planId, testMode }): Promise<Doc<"plans">> => {
     if (isTestMode(testMode)) {
       const local = await ctx.runQuery(internal.lookup.plan, { id: planId });
-      if (!local) throw razorpayError("RAZORPAY_NOT_FOUND", "Plan not found in test mode");
-      assertModeMatches(local, true, "plan");
+      if (!local) throw razorpayError("RAZORPAY_NOT_FOUND");
+      assertModeMatches(local, true);
       return local;
     }
     const raw = await requestProvider("GET", `/plans/${encodeURIComponent(planId)}`, {
       idempotent: true,
     });
-    if (record(raw).id !== planId)
-      throw razorpayError("RAZORPAY_INVALID_ARGUMENT", "Razorpay plan id mismatch");
+    if (record(raw).id !== planId) throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     return ctx.runMutation(internal.mutations.putPlan, { raw, observedAt: Date.now() });
   },
 });

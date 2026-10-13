@@ -4,22 +4,22 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export function record(value: unknown, label = "response"): Record<string, unknown> {
+export function record(value: unknown): Record<string, unknown> {
   if (!isRecord(value)) {
-    throw razorpayError("RAZORPAY_INVALID_ARGUMENT", `Invalid Razorpay ${label}`);
+    throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
   }
   return value;
 }
 
-export function stringField(value: unknown, label: string): string {
-  if (typeof value !== "string" || value.length === 0)
-    throw razorpayError("RAZORPAY_INVALID_ARGUMENT", `Invalid ${label}`);
+export function stringField(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 4096 || !wellFormed(value))
+    throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
   return value;
 }
 
-export function integerField(value: unknown, label: string, min = 0): number {
+export function integerField(value: unknown, min = 0): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min) {
-    throw razorpayError("RAZORPAY_INVALID_ARGUMENT", `Invalid ${label}`);
+    throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
   }
   return value;
 }
@@ -29,12 +29,12 @@ export function validateNotes(notes: Record<string, string> | undefined): Record
   const entries = Object.entries(notes);
   if (
     entries.length > 15 ||
-    entries.some(([key, value]) => !key || key.length > 256 || value.length > 256)
+    entries.some(
+      ([key, value]) =>
+        !key || key.length > 256 || value.length > 256 || !wellFormed(key) || !wellFormed(value),
+    )
   ) {
-    throw razorpayError(
-      "RAZORPAY_INVALID_ARGUMENT",
-      "Razorpay notes must contain at most 15 pairs of at most 256 characters",
-    );
+    throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
   }
   return notes;
 }
@@ -45,9 +45,18 @@ export function linkedNotes(
   externalId?: string,
   metadata?: Record<string, string>,
 ): Record<string, string> {
+  validateNotes(notes);
+  validateNotes(metadata);
+  if (
+    [...Object.keys(notes ?? {}), ...Object.keys(metadata ?? {})].some((key) =>
+      key.toLowerCase().startsWith("operatornest"),
+    )
+  )
+    throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
+  for (const value of [userId, externalId]) if (value !== undefined) boundedString(value, 256);
   const linked = { ...notes, ...metadata };
-  if (userId) linked.userId = userId;
-  if (externalId) linked.externalId = externalId;
+  if (userId) linked.operatornestUserId = userId;
+  if (externalId) linked.operatornestExternalId = externalId;
   return validateNotes(linked);
 }
 
@@ -97,7 +106,6 @@ export function statusAdvances(
   return true;
 }
 
-/** Deterministic fake provider id: 80 bits of a SHA-256 digest over the unambiguous JSON of `parts`. */
 export async function deterministicTestId(
   prefix: string,
   parts: readonly (string | number | undefined)[],
@@ -126,4 +134,26 @@ export function omitUndefined(value: unknown): unknown {
     );
   }
   return value;
+}
+
+export function boundedString(value: string, max: number): void {
+  if (!value || value.length > max || !wellFormed(value))
+    throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
+}
+export function boundedLimit(limit = 50): number {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
+    throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
+  return limit;
+}
+export function wellFormed(value: string): boolean {
+  return !/[\uD800-\uDFFF]/u.test(value);
+}
+export function truncateText(value: string, max: number): string {
+  let result = "";
+  for (const point of value) {
+    const normalized = wellFormed(point) ? point : "�";
+    if (result.length + normalized.length > max) break;
+    result += normalized;
+  }
+  return result;
 }

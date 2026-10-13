@@ -1,3 +1,4 @@
+import { razorpayError, type RazorpayErrorCode } from "../shared/errors.js";
 import { stubRazorpayEnv, restoreRazorpayTestState } from "../test-helpers.js";
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -8,8 +9,8 @@ import { hmacSha256Hex } from "@operatornest/convex-razorpay";
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 const newHarness = () => convexTest(schema, modules);
 type Harness = ReturnType<typeof newHarness>;
-// Public test vector from docs/spec.md.
-const signingFixture = "EnLs21M47BllR3X8PSFtjtbd";
+
+const testOnlySigningSecret = "EnLs21M47BllR3X8PSFtjtbd";
 const paymentId = "pay_IH4NVgf4wjLNgR";
 const orderId = "order_IluGWxBm9U8zJ8";
 const subscriptionId = "sub_ID6MOhgkcoHjE7";
@@ -91,9 +92,9 @@ function mirrorPayment(t: Harness, raw: Record<string, unknown>, testMode: boole
 }
 
 const signOrder = (order: string, pay = paymentId) =>
-  hmacSha256Hex(signingFixture, `${order}|${pay}`);
+  hmacSha256Hex(testOnlySigningSecret, `${order}|${pay}`);
 const signSubscription = (sub: string, pay = paymentId) =>
-  hmacSha256Hex(signingFixture, `${pay}|${sub}`);
+  hmacSha256Hex(testOnlySigningSecret, `${pay}|${sub}`);
 
 function respond(subscription: unknown, pay: unknown) {
   vi.stubGlobal(
@@ -104,9 +105,9 @@ function respond(subscription: unknown, pay: unknown) {
   );
 }
 
-function rejectsWith(promise: Promise<unknown>, code: string, message?: string) {
+function rejectsWith(promise: Promise<unknown>, code: RazorpayErrorCode) {
   return expect(promise).rejects.toMatchObject({
-    data: { code, ...(message === undefined ? {} : { message }) },
+    data: razorpayError(code).data,
   });
 }
 
@@ -124,9 +125,9 @@ afterEach(() => {
   restoreRazorpayTestState();
 });
 
-test("subscription Checkout verifies the spec vector and links a payment without subscription_id", async () => {
+test("subscription Checkout verifies the fixed HMAC fixture and links a payment without subscription_id", async () => {
   vi.stubEnv("RAZORPAY_KEY_ID", "rzp_test_public");
-  vi.stubEnv("RAZORPAY_KEY_SECRET", signingFixture);
+  vi.stubEnv("RAZORPAY_KEY_SECRET", testOnlySigningSecret);
   const fetch = vi.fn(async (url: string) => {
     if (url.endsWith(`/subscriptions/${subscriptionId}`)) {
       return new Response(
@@ -166,8 +167,8 @@ test("subscription Checkout verifies the spec vector and links a payment without
   expect(fetch).toHaveBeenCalledTimes(2);
 });
 
-test("payment-link callback verifies the exact spec vector without provider HTTP", async () => {
-  vi.stubEnv("RAZORPAY_KEY_SECRET", signingFixture);
+test("payment-link callback verifies the fixed HMAC fixture without provider HTTP", async () => {
+  vi.stubEnv("RAZORPAY_KEY_SECRET", testOnlySigningSecret);
   const t = convexTest(schema, modules);
   expect(
     await t.action(api.verification.paymentLink, {
@@ -182,7 +183,7 @@ test("payment-link callback verifies the exact spec vector without provider HTTP
 });
 
 test("payment-link callback rejects a bad signature with a typed error", async () => {
-  vi.stubEnv("RAZORPAY_KEY_SECRET", signingFixture);
+  vi.stubEnv("RAZORPAY_KEY_SECRET", testOnlySigningSecret);
   const t = convexTest(schema, modules);
   await expect(
     t.action(api.verification.paymentLink, {
@@ -203,14 +204,14 @@ test("all Checkout and payment-link signatures fail closed without the API secre
       paymentId,
       signature: orderSignature,
     }),
-  ).rejects.toThrow("Invalid checkout signature");
+  ).rejects.toThrow("An argument is invalid, missing or out of bounds.");
   await expect(
     t.action(api.verification.subscriptionCheckout, {
       subscriptionId,
       paymentId,
       signature: subscriptionSignature,
     }),
-  ).rejects.toThrow("Invalid subscription checkout signature");
+  ).rejects.toThrow("An argument is invalid, missing or out of bounds.");
   await expect(
     t.action(api.verification.paymentLink, {
       paymentLinkId: "plink_ID6MOhgkcoHjE7",
@@ -225,7 +226,7 @@ test("all Checkout and payment-link signatures fail closed without the API secre
 
 test("order Checkout rejects a valid signature when provider payment belongs to another order", async () => {
   vi.stubEnv("RAZORPAY_KEY_ID", "rzp_test_public");
-  vi.stubEnv("RAZORPAY_KEY_SECRET", signingFixture);
+  vi.stubEnv("RAZORPAY_KEY_SECRET", testOnlySigningSecret);
   const t = convexTest(schema, modules);
   const checkoutOrderId = "order_checkout_mismatch";
   await mirrorOrder(t, checkoutOrderId);
@@ -240,7 +241,7 @@ test("order Checkout rejects a valid signature when provider payment belongs to 
       paymentId,
       signature: await signOrder(checkoutOrderId),
     }),
-  ).rejects.toThrow("Checkout payment identity mismatch");
+  ).rejects.toThrow("An argument is invalid, missing or out of bounds.");
   expect(fetch).toHaveBeenCalledTimes(1);
   expect(await t.query(api.payments.listForOrder, { orderId: checkoutOrderId })).toEqual([]);
   expect(await t.query(api.payments.listForOrder, { orderId: "order_another" })).toEqual([]);
@@ -248,7 +249,7 @@ test("order Checkout rejects a valid signature when provider payment belongs to 
 
 test("order Checkout requires an authorized or captured payment", async () => {
   vi.stubEnv("RAZORPAY_KEY_ID", "rzp_test_public");
-  vi.stubEnv("RAZORPAY_KEY_SECRET", signingFixture);
+  vi.stubEnv("RAZORPAY_KEY_SECRET", testOnlySigningSecret);
   const t = convexTest(schema, modules);
   const checkoutOrderId = "order_checkout_status";
   await mirrorOrder(t, checkoutOrderId);
@@ -269,13 +270,9 @@ test("order Checkout requires an authorized or captured payment", async () => {
           ),
       ),
     );
-    await rejectsWith(
-      t.action(api.verification.checkout, args),
-      "RAZORPAY_INVALID_ARGUMENT",
-      "Checkout payment is not authorized or captured",
-    );
+    await rejectsWith(t.action(api.verification.checkout, args), "RAZORPAY_INVALID_ARGUMENT");
   }
-  // The provider truth is still mirrored, but the payment is never marked verified.
+
   expect(await t.query(api.payments.listForOrder, { orderId: checkoutOrderId })).toMatchObject([
     { verified: false },
   ]);
@@ -302,19 +299,17 @@ test("order Checkout requires an authorized or captured payment", async () => {
 
 test("checkout requires a component-created order and checks expected user ownership", async () => {
   vi.stubEnv("RAZORPAY_KEY_ID", "rzp_test_public");
-  vi.stubEnv("RAZORPAY_KEY_SECRET", signingFixture);
+  vi.stubEnv("RAZORPAY_KEY_SECRET", testOnlySigningSecret);
   const t = convexTest(schema, modules);
-  const signature = await hmacSha256Hex(signingFixture, `${orderId}|${paymentId}`);
+  const signature = await hmacSha256Hex(testOnlySigningSecret, `${orderId}|${paymentId}`);
   await rejectsWith(
     t.action(api.verification.checkout, { orderId, paymentId, signature }),
     "RAZORPAY_NOT_FOUND",
-    "Checkout order not found",
   );
   await mirrorOrder(t, orderId, { createdThroughComponent: false });
   await rejectsWith(
     t.action(api.verification.checkout, { orderId, paymentId, signature }),
     "RAZORPAY_INVALID_ARGUMENT",
-    "Checkout order was not created through this component",
   );
   const owned = "order_checkout_owned";
   await mirrorOrder(t, owned, { userId: "user_owner" });
@@ -325,7 +320,7 @@ test("checkout requires a component-created order and checks expected user owner
       signature: await signOrder(owned),
       userId: "user_other",
     }),
-  ).rejects.toThrow("Checkout order belongs to another user");
+  ).rejects.toThrow("An argument is invalid, missing or out of bounds.");
   expect(fetch).not.toHaveBeenCalled();
 });
 
@@ -334,7 +329,7 @@ test.each([
   { suffix: "currency", changes: { currency: "USD" } },
 ])("checkout rejects a fetched payment with a mismatched $suffix", async ({ suffix, changes }) => {
   vi.stubEnv("RAZORPAY_KEY_ID", "rzp_test_public");
-  vi.stubEnv("RAZORPAY_KEY_SECRET", signingFixture);
+  vi.stubEnv("RAZORPAY_KEY_SECRET", testOnlySigningSecret);
   const t = convexTest(schema, modules);
   const checkoutOrderId = `order_checkout_${suffix}_match`;
   await mirrorOrder(t, checkoutOrderId);
@@ -351,12 +346,12 @@ test.each([
       paymentId,
       signature: await signOrder(checkoutOrderId),
     }),
-  ).rejects.toThrow("Checkout payment amount or currency mismatch");
+  ).rejects.toThrow("An argument is invalid, missing or out of bounds.");
 });
 
 test("test-mode Checkout confirms against the mirrored payment without provider HTTP", async () => {
   vi.stubEnv("RAZORPAY_KEY_ID", "rzp_test_public");
-  vi.stubEnv("RAZORPAY_KEY_SECRET", signingFixture);
+  vi.stubEnv("RAZORPAY_KEY_SECRET", testOnlySigningSecret);
   const t = convexTest(schema, modules);
   const created = await t.action(api.orders.create, {
     amount: 50000,
@@ -367,12 +362,8 @@ test("test-mode Checkout confirms against the mirrored payment without provider 
   const checkoutOrderId = created.order.razorpayId;
   const signature = await signOrder(checkoutOrderId);
   const args = { orderId: checkoutOrderId, paymentId, signature, testMode: true };
-  await rejectsWith(
-    t.action(api.verification.checkout, args),
-    "RAZORPAY_NOT_FOUND",
-    "Payment not found in test mode",
-  );
-  // A signed webhook is tagged test only because the deployment runs in test mode.
+  await rejectsWith(t.action(api.verification.checkout, args), "RAZORPAY_NOT_FOUND");
+
   vi.stubEnv("RAZORPAY_TEST_MODE", "true");
   vi.stubEnv("RAZORPAY_WEBHOOK_SECRET", "whsec_checkout_fixture");
   const body = JSON.stringify({
@@ -403,7 +394,7 @@ test("test-mode Checkout confirms against the mirrored payment without provider 
       ...args,
       signature: "0".repeat(64),
     }),
-  ).rejects.toThrow("Invalid checkout signature");
+  ).rejects.toThrow("An argument is invalid, missing or out of bounds.");
   expect(await t.action(api.verification.checkout, args)).toMatchObject({
     razorpayId: paymentId,
     orderId: checkoutOrderId,
@@ -415,7 +406,7 @@ test("test-mode Checkout confirms against the mirrored payment without provider 
 
 test("test-mode Checkout cannot verify a live-mirrored payment or order", async () => {
   vi.stubEnv("RAZORPAY_KEY_ID", "rzp_test_public");
-  vi.stubEnv("RAZORPAY_KEY_SECRET", signingFixture);
+  vi.stubEnv("RAZORPAY_KEY_SECRET", testOnlySigningSecret);
   vi.stubEnv("RAZORPAY_WEBHOOK_SECRET", "whsec_checkout_live");
   const t = convexTest(schema, modules);
   const testOrder = (
@@ -426,7 +417,7 @@ test("test-mode Checkout cannot verify a live-mirrored payment or order", async 
       testMode: true,
     })
   ).order.razorpayId;
-  // Without RAZORPAY_TEST_MODE the signed webhook entity is live.
+
   const body = JSON.stringify({
     entity: "event",
     event: "payment.captured",
@@ -453,7 +444,6 @@ test("test-mode Checkout cannot verify a live-mirrored payment or order", async 
     { verified: false, testMode: false },
   ]);
 
-  // A live order cannot be verified in test mode, nor a test order in live mode.
   const liveOrder = "order_checkout_live_only";
   await mirrorOrder(t, liveOrder);
   await rejectsWith(
@@ -474,7 +464,7 @@ test("test-mode Checkout cannot verify a live-mirrored payment or order", async 
 
 test("subscription Checkout needs a mirrored, component-created, owned subscription", async () => {
   vi.stubEnv("RAZORPAY_KEY_ID", "rzp_test_public");
-  vi.stubEnv("RAZORPAY_KEY_SECRET", signingFixture);
+  vi.stubEnv("RAZORPAY_KEY_SECRET", testOnlySigningSecret);
   const t = convexTest(schema, modules);
   await rejectsWith(
     t.action(api.verification.subscriptionCheckout, {
@@ -483,7 +473,6 @@ test("subscription Checkout needs a mirrored, component-created, owned subscript
       signature: await signSubscription(subscriptionId),
     }),
     "RAZORPAY_NOT_FOUND",
-    "Checkout subscription not found",
   );
   await mirrorSubscription(t, subscriptionId, { createdThroughComponent: false });
   await rejectsWith(
@@ -493,7 +482,6 @@ test("subscription Checkout needs a mirrored, component-created, owned subscript
       signature: await signSubscription(subscriptionId),
     }),
     "RAZORPAY_INVALID_ARGUMENT",
-    "Checkout subscription was not created through this component",
   );
   const owned = "sub_checkout_owned";
   await mirrorSubscription(t, owned, { userId: "user_owner" });
@@ -505,14 +493,13 @@ test("subscription Checkout needs a mirrored, component-created, owned subscript
       userId: "user_other",
     }),
     "RAZORPAY_INVALID_ARGUMENT",
-    "Checkout subscription belongs to another user",
   );
   expect(fetch).not.toHaveBeenCalled();
 });
 
 test("live subscription Checkout validates provider identities and payment status", async () => {
   vi.stubEnv("RAZORPAY_KEY_ID", "rzp_test_public");
-  vi.stubEnv("RAZORPAY_KEY_SECRET", signingFixture);
+  vi.stubEnv("RAZORPAY_KEY_SECRET", testOnlySigningSecret);
   const t = convexTest(schema, modules);
   await mirrorSubscription(t, subscriptionId, { userId: "user_owner" });
   const args = {
@@ -536,19 +523,16 @@ test("live subscription Checkout validates provider identities and payment statu
   await rejectsWith(
     t.action(api.verification.subscriptionCheckout, args),
     "RAZORPAY_INVALID_ARGUMENT",
-    "Subscription identity mismatch",
   );
   respond(providerSubscription, { ...payment, id: "pay_other" });
   await rejectsWith(
     t.action(api.verification.subscriptionCheckout, args),
     "RAZORPAY_INVALID_ARGUMENT",
-    "Payment identity mismatch",
   );
   respond(providerSubscription, { ...payment, status: "failed", captured: false });
   await rejectsWith(
     t.action(api.verification.subscriptionCheckout, args),
     "RAZORPAY_INVALID_ARGUMENT",
-    "Checkout payment is not authorized or captured",
   );
   respond(providerSubscription, payment);
   expect(await t.action(api.verification.subscriptionCheckout, args)).toMatchObject({
@@ -560,7 +544,7 @@ test("live subscription Checkout validates provider identities and payment statu
 
 test("test-mode subscription Checkout confirms mirrored rows and refuses live ones", async () => {
   vi.stubEnv("RAZORPAY_KEY_ID", "rzp_test_public");
-  vi.stubEnv("RAZORPAY_KEY_SECRET", signingFixture);
+  vi.stubEnv("RAZORPAY_KEY_SECRET", testOnlySigningSecret);
   const t = convexTest(schema, modules);
   const testSubscription = "sub_checkout_test_mode";
   await mirrorSubscription(t, testSubscription, { testMode: true, userId: "user_owner" });
@@ -571,16 +555,11 @@ test("test-mode subscription Checkout confirms mirrored rows and refuses live on
     userId: "user_owner",
     testMode: true,
   };
-  await rejectsWith(
-    t.action(api.verification.subscriptionCheckout, args),
-    "RAZORPAY_NOT_FOUND",
-    "Payment not found in test mode",
-  );
+  await rejectsWith(t.action(api.verification.subscriptionCheckout, args), "RAZORPAY_NOT_FOUND");
   await mirrorPayment(t, { status: "created", captured: false }, true);
   await rejectsWith(
     t.action(api.verification.subscriptionCheckout, args),
     "RAZORPAY_INVALID_ARGUMENT",
-    "Checkout payment is not authorized or captured",
   );
   await mirrorPayment(t, { status: "authorized", captured: false }, true);
   expect(await t.action(api.verification.subscriptionCheckout, args)).toMatchObject({
@@ -588,12 +567,12 @@ test("test-mode subscription Checkout confirms mirrored rows and refuses live on
     subscriptionId: testSubscription,
     testMode: true,
   });
-  // The same checkout in live mode must not touch a test-mirrored subscription.
+
   await rejectsWith(
     t.action(api.verification.subscriptionCheckout, { ...args, testMode: false }),
     "RAZORPAY_MODE_MISMATCH",
   );
-  // A live payment row is never verified by test-mode checkout.
+
   const livePay = "pay_live_row";
   await mirrorPayment(t, { id: livePay, status: "captured" }, false);
   await rejectsWith(

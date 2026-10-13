@@ -116,9 +116,7 @@ test("customer mirror refuses cross-user links and stale provider observations",
       observedAt,
       ...(userId === undefined ? {} : { userId }),
     });
-  await expect(put(customer, 10, "user_2")).rejects.toMatchObject({
-    data: { code: "RAZORPAY_CUSTOMER_CONFLICT" },
-  });
+  expect(await put(customer, 10)).not.toHaveProperty("userId");
   await put({ ...customer, name: "New" }, 20, "user_1");
   expect(await put({ ...customer, name: "Old" }, 10, "user_1")).toMatchObject({
     name: "New",
@@ -148,6 +146,7 @@ test("plan identity and idempotency claim fingerprint are enforced", async () =>
   );
   await t.run(async (ctx) => {
     await ctx.db.insert("idempotencyRequests", {
+      testMode: false,
       resource: "plan",
       key: "present",
       fingerprint: "original",
@@ -169,6 +168,7 @@ test("subscription mirror cannot regress paid count and settles its claim", asyn
   const t = convexTest(schema, modules);
   await t.run(async (ctx) => {
     await ctx.db.insert("idempotencyRequests", {
+      testMode: false,
       resource: "subscription",
       key: "subscription-key",
       fingerprint: "fingerprint",
@@ -182,14 +182,22 @@ test("subscription mirror cannot regress paid count and settles its claim", asyn
     idempotencyKey: "subscription-key",
     requestFingerprint: "fingerprint",
   });
-  expect(
-    await t.mutation(internal.mutations.putSubscription, { raw: subscription, observedAt: 10 }),
-  ).toMatchObject({ status: "active", paidCount: 3, remainingCount: 9 });
+  await t.mutation(internal.webhooks.applyEntities, {
+    event: "subscription.updated",
+    rawEntity: subscription,
+    createdAtProvider: 10,
+    testMode: false,
+  });
+  expect(await t.run((ctx) => ctx.db.query("subscriptions").first())).toMatchObject({
+    status: "active",
+    paidCount: 3,
+    remainingCount: 9,
+  });
   const claim = await t.run((ctx) =>
     ctx.db
       .query("idempotencyRequests")
-      .withIndex("by_resource_and_key", (q) =>
-        q.eq("resource", "subscription").eq("key", "subscription-key"),
+      .withIndex("by_resource_and_testMode_and_key", (q) =>
+        q.eq("resource", "subscription").eq("testMode", false).eq("key", "subscription-key"),
       )
       .unique(),
   );

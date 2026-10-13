@@ -1,5 +1,3 @@
-// Loads provider credentials from the gitignored .env.e2e into the local
-// Convex deployment. Values go through stdin and are never printed.
 import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";

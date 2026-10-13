@@ -18,7 +18,7 @@ describe("shared validation and state", () => {
     expect(isRecord([])).toBe(false);
     expect(isRecord(null)).toBe(false);
     expect(record({ id: "pay_1" })).toEqual({ id: "pay_1" });
-    expect(stringField("pay_1", "payment id")).toBe("pay_1");
+    expect(stringField("pay_1")).toBe("pay_1");
     for (const value of [null, [], "bad"]) {
       expect(() => record(value)).toThrowError(
         expect.objectContaining({
@@ -27,7 +27,7 @@ describe("shared validation and state", () => {
       );
     }
     for (const value of [undefined, "", 1]) {
-      expect(() => stringField(value, "payment id")).toThrowError(
+      expect(() => stringField(value)).toThrowError(
         expect.objectContaining({
           data: expect.objectContaining({ code: "RAZORPAY_INVALID_ARGUMENT" }),
         }),
@@ -36,9 +36,9 @@ describe("shared validation and state", () => {
   });
 
   test("money requires a safe integer in subunits", () => {
-    expect(integerField(50000, "amount", 100)).toBe(50000);
+    expect(integerField(50000, 100)).toBe(50000);
     for (const value of [99, 100.5, Number.MAX_SAFE_INTEGER + 1, "50000", -1]) {
-      expect(() => integerField(value, "amount", 100)).toThrow();
+      expect(() => integerField(value, 100)).toThrow();
     }
   });
 
@@ -50,8 +50,8 @@ describe("shared validation and state", () => {
     expect(() => validateNotes({ a: "x".repeat(257) })).toThrow();
     expect(() => linkedNotes({}, "u", undefined, { ["x".repeat(257)]: "v" })).toThrow();
     expect(linkedNotes({}, "u-1", "external-1", { tier: "pro" })).toEqual({
-      userId: "u-1",
-      externalId: "external-1",
+      operatornestUserId: "u-1",
+      operatornestExternalId: "external-1",
       tier: "pro",
     });
   });

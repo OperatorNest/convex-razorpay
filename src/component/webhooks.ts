@@ -3,40 +3,20 @@ import { maxWebhookBodyBytes, retentionMs } from "../shared/constants.js";
 import { sha256Hex } from "../shared/crypto.js";
 import { v } from "convex/values";
 import type { Infer } from "convex/values";
-import { action, internalMutation, internalQuery, mutation } from "./_generated/server.js";
+import { action, internalMutation, mutation } from "./_generated/server.js";
 import type { MutationCtx } from "./_generated/server.js";
 import type { FunctionHandle } from "convex/server";
 import { internal } from "./_generated/api.js";
 import { env } from "./_generated/server.js";
 import { constantTimeEqualHex, hmacSha256Hex } from "../shared/crypto.js";
-import { integerField, isRecord, record, stringField } from "../shared/validation.js";
-import { envTestMode } from "./provider.js";
+import { integerField, record, stringField } from "../shared/validation.js";
+import { resolveMode } from "./provider.js";
 import { orderFields, paymentFields, refundFields, subscriptionFields } from "./mapping.js";
 import { applyOrder, applyPayment, applyRefund, applySubscription } from "./write.js";
 
 import { webhookIngestResultValidator } from "../shared/validators.js";
-import schema from "./schema.js";
 
 type IngestResult = Infer<typeof webhookIngestResultValidator>;
-
-/** Internal-only receipt used by the maintainer end-to-end test harness. */
-export const e2eReceipt = internalQuery({
-  args: { eventId: v.string(), bodyHash: v.string() },
-  returns: v.object({
-    byEventId: v.union(schema.doc("webhookEvents"), v.null()),
-    byBodyHash: v.union(schema.doc("webhookEvents"), v.null()),
-  }),
-  handler: async (ctx, { eventId, bodyHash }) => ({
-    byEventId: await ctx.db
-      .query("webhookEvents")
-      .withIndex("by_eventId", (q) => q.eq("eventId", eventId))
-      .unique(),
-    byBodyHash: await ctx.db
-      .query("webhookEvents")
-      .withIndex("by_bodyHash", (q) => q.eq("bodyHash", bodyHash))
-      .unique(),
-  }),
-});
 
 type Parsed = {
   event: string;
@@ -53,20 +33,18 @@ function parseEnvelopeUnsafe(body: string): Parsed {
   try {
     value = JSON.parse(body);
   } catch {
-    throw razorpayError("RAZORPAY_MALFORMED_WEBHOOK", "Webhook body is not valid JSON");
+    throw razorpayError("RAZORPAY_MALFORMED_WEBHOOK");
   }
-  const envelope = record(value, "webhook");
-  if (envelope.entity !== "event")
-    throw razorpayError("RAZORPAY_MALFORMED_WEBHOOK", "Webhook envelope is invalid");
-  const event = stringField(envelope.event, "webhook event");
+  const envelope = record(value);
+  if (envelope.entity !== "event") throw razorpayError("RAZORPAY_MALFORMED_WEBHOOK");
+  const event = stringField(envelope.event);
   const accountId = typeof envelope.account_id === "string" ? envelope.account_id : undefined;
-  const createdAtProvider = integerField(envelope.created_at, "webhook created_at") * 1000;
-  if (!Number.isSafeInteger(createdAtProvider))
-    throw razorpayError("RAZORPAY_MALFORMED_WEBHOOK", "Webhook timestamp is invalid");
-  const payload = record(envelope.payload, "webhook payload");
+  const createdAtProvider = integerField(envelope.created_at) * 1000;
+  if (!Number.isSafeInteger(createdAtProvider)) throw razorpayError("RAZORPAY_MALFORMED_WEBHOOK");
+  const payload = record(envelope.payload);
   const readEntity = (key: string) => {
-    const wrapped = record(payload[key], `${key} payload`);
-    return record(wrapped.entity, `${key} entity`);
+    const wrapped = record(payload[key]);
+    return record(wrapped.entity);
   };
   let entity: Record<string, unknown> | undefined;
   let secondary: Record<string, unknown> | undefined;
@@ -84,8 +62,7 @@ function parseEnvelopeUnsafe(body: string): Parsed {
     if (payload.payment) {
       secondary = readEntity("payment");
       paymentFields(secondary, createdAtProvider);
-      if (secondary.order_id !== entity.id)
-        throw razorpayError("RAZORPAY_INVALID_ENTITY", "Webhook entity relationship is invalid");
+      if (secondary.order_id !== entity.id) throw razorpayError("RAZORPAY_INVALID_ENTITY");
     }
   } else if (
     event.startsWith("refund.") &&
@@ -96,8 +73,7 @@ function parseEnvelopeUnsafe(body: string): Parsed {
     if (payload.payment) {
       secondary = readEntity("payment");
       paymentFields(secondary, createdAtProvider);
-      if (secondary.id !== entity.payment_id)
-        throw razorpayError("RAZORPAY_INVALID_ENTITY", "Webhook entity relationship is invalid");
+      if (secondary.id !== entity.payment_id) throw razorpayError("RAZORPAY_INVALID_ENTITY");
     }
   } else if (
     event.startsWith("subscription.") &&
@@ -121,21 +97,20 @@ function parseEnvelopeUnsafe(body: string): Parsed {
       secondary = readEntity("payment");
       paymentFields(secondary, createdAtProvider);
       if (secondary.subscription_id !== undefined && secondary.subscription_id !== entity.id) {
-        throw razorpayError("RAZORPAY_INVALID_ENTITY", "Webhook entity relationship is invalid");
+        throw razorpayError("RAZORPAY_INVALID_ENTITY");
       }
     }
-    if (
-      isRecord(payload.invoice) &&
-      isRecord(payload.invoice.entity) &&
-      typeof payload.invoice.entity.id === "string"
-    ) {
-      invoiceId = payload.invoice.entity.id;
+    if (payload.invoice !== undefined) {
+      const invoice = readEntity("invoice");
       if (
-        typeof payload.invoice.entity.subscription_id === "string" &&
-        payload.invoice.entity.subscription_id !== subscriptionId
-      ) {
-        throw razorpayError("RAZORPAY_INVALID_ENTITY", "Webhook entity relationship is invalid");
-      }
+        typeof invoice.id !== "string" ||
+        !/^inv_[A-Za-z0-9_]+$/.test(invoice.id) ||
+        (invoice.subscription_id !== undefined && invoice.subscription_id !== subscriptionId) ||
+        (secondary?.invoice_id !== undefined && secondary.invoice_id !== invoice.id) ||
+        (invoice.payment_id !== undefined && invoice.payment_id !== secondary?.id)
+      )
+        throw razorpayError("RAZORPAY_INVALID_ENTITY");
+      invoiceId = invoice.id;
     }
   }
   if (secondary) {
@@ -151,7 +126,7 @@ function parseEnvelope(body: string): Parsed {
     return parseEnvelopeUnsafe(body);
   } catch (error) {
     if (isRazorpayError(error)) throw error;
-    throw razorpayError("RAZORPAY_MALFORMED_WEBHOOK", "Webhook envelope or entity is malformed");
+    throw razorpayError("RAZORPAY_MALFORMED_WEBHOOK");
   }
 }
 
@@ -169,28 +144,20 @@ export const ingest = action({
   },
   returns: webhookIngestResultValidator,
   handler: async (ctx, args): Promise<IngestResult> => {
-    if (!env.RAZORPAY_WEBHOOK_SECRET)
-      throw razorpayError(
-        "RAZORPAY_WEBHOOK_SECRET_MISSING",
-        "Webhook signing secret is not configured",
-      );
+    if (!env.RAZORPAY_WEBHOOK_SECRET) throw razorpayError("RAZORPAY_WEBHOOK_SECRET_MISSING");
     const current = await hmacSha256Hex(env.RAZORPAY_WEBHOOK_SECRET, args.body);
     const validCurrent = constantTimeEqualHex(current, args.signature);
     const previous = env.RAZORPAY_WEBHOOK_SECRET_PREVIOUS
       ? await hmacSha256Hex(env.RAZORPAY_WEBHOOK_SECRET_PREVIOUS, args.body)
       : current;
     const validPrevious = constantTimeEqualHex(previous, args.signature);
-    if (!validCurrent && !validPrevious)
-      throw razorpayError("RAZORPAY_INVALID_WEBHOOK_SIGNATURE", "Webhook signature is invalid");
+    if (!validCurrent && !validPrevious) throw razorpayError("RAZORPAY_INVALID_WEBHOOK_SIGNATURE");
     const bodyHash = await sha256Hex(args.body);
     let parsed: Parsed | undefined;
     let errorCode: string | undefined;
     try {
       if (new TextEncoder().encode(args.body).byteLength > maxWebhookBodyBytes)
-        throw razorpayError(
-          "RAZORPAY_MALFORMED_WEBHOOK",
-          "Webhook body exceeds the supported size",
-        );
+        throw razorpayError("RAZORPAY_MALFORMED_WEBHOOK");
       parsed = parseEnvelope(args.body);
     } catch (error) {
       errorCode = safeErrorCode(error);
@@ -205,8 +172,8 @@ export const ingest = action({
       ...(parsed?.subscriptionId === undefined ? {} : { subscriptionId: parsed.subscriptionId }),
       ...(parsed?.invoiceId === undefined ? {} : { invoiceId: parsed.invoiceId }),
       createdAtProvider: parsed?.createdAtProvider ?? fallbackNow,
-      // Signed webhooks carry no mode: entities are live unless the deployment runs in test mode.
-      testMode: envTestMode(),
+
+      testMode: resolveMode(),
       bodyHash,
       ...(errorCode === undefined ? {} : { errorCode }),
       ...(args.callbackHandle === undefined ? {} : { callbackHandle: args.callbackHandle }),
@@ -235,11 +202,14 @@ export const applyEntities = internalMutation({
         if (args.rawSecondary)
           await applyPayment(ctx, args.rawSecondary, args.createdAtProvider, { testMode });
       } else if (args.event.startsWith("refund.")) {
-        await applyRefund(ctx, args.rawEntity, args.createdAtProvider, { testMode });
         if (args.rawSecondary)
           await applyPayment(ctx, args.rawSecondary, args.createdAtProvider, { testMode });
+        await applyRefund(ctx, args.rawEntity, args.createdAtProvider, { testMode });
       } else if (args.event.startsWith("subscription.")) {
-        await applySubscription(ctx, args.rawEntity, args.createdAtProvider, { testMode });
+        await applySubscription(ctx, args.rawEntity, args.createdAtProvider, {
+          testMode,
+          webhookCreatedAtProvider: args.createdAtProvider,
+        });
         if (args.rawSecondary)
           await applyPayment(ctx, args.rawSecondary, args.createdAtProvider, {
             testMode,
@@ -351,7 +321,7 @@ async function deleteBatch(ctx: MutationCtx, before: number, batchSize: number):
     batchSize < 1 ||
     batchSize > 20
   )
-    throw razorpayError("RAZORPAY_INVALID_ARGUMENT", "Invalid cleanup bounds");
+    throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
   const rows = await ctx.db
     .query("webhookEvents")
     .withIndex("by_receivedAt", (q) => q.lt("receivedAt", before))

@@ -1,7 +1,7 @@
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { hmacSha256Hex, sha256Hex } from "../shared/crypto.js";
-import { api, internal } from "./_generated/api.js";
+import { api } from "./_generated/api.js";
 import schema from "./schema.js";
 
 type Fixture = {
@@ -51,10 +51,16 @@ describe("observed Razorpay webhook fixtures", () => {
         expect(first.status, path).toBe(fixture.ingestStatus);
 
         const recordedEventId = eventId || `sha256:${bodyHash}`;
-        const receipt = await t.query(internal.webhooks.e2eReceipt, {
-          eventId: recordedEventId,
-          bodyHash,
-        });
+        const receipt = await t.run(async (ctx) => ({
+          byEventId: await ctx.db
+            .query("webhookEvents")
+            .withIndex("by_eventId", (q) => q.eq("eventId", recordedEventId))
+            .unique(),
+          byBodyHash: await ctx.db
+            .query("webhookEvents")
+            .withIndex("by_bodyHash", (q) => q.eq("bodyHash", bodyHash))
+            .unique(),
+        }));
         expect(receipt.byEventId?.status, path).toBe("processed");
         expect(receipt.byEventId?.bodyHash, path).toBe(bodyHash);
         expect(receipt.byBodyHash?.event, path).toBe(envelope.event);
@@ -66,10 +72,12 @@ describe("observed Razorpay webhook fixtures", () => {
           eventId: retryEventId,
         });
         expect(duplicate.status, path).toBe("duplicate");
-        const retryReceipt = await t.query(internal.webhooks.e2eReceipt, {
-          eventId: retryEventId || `sha256:${bodyHash}`,
-          bodyHash,
-        });
+        const retryReceipt = await t.run(async (ctx) => ({
+          byBodyHash: await ctx.db
+            .query("webhookEvents")
+            .withIndex("by_bodyHash", (q) => q.eq("bodyHash", bodyHash))
+            .unique(),
+        }));
         expect(retryReceipt.byBodyHash?.eventId, path).toBe(recordedEventId);
       }
       if (exercised === 0)

@@ -75,6 +75,11 @@ test("every public client method delegates to its component function", async () 
   });
   await client.webhooks.cleanup(ctx, {});
   await client.idempotency.release(ctx, { resource: "plan", key: "key_1" });
+  expect(ctx.runMutation.mock.calls.at(-1)?.[1]).toEqual({
+    resource: "plan",
+    key: "key_1",
+    testMode: true,
+  });
   expect(
     checkoutOptions(
       { razorpayId: "order_1", amount: 50000, currency: "INR", keyId: "rzp_test_public" },
@@ -148,7 +153,6 @@ test("typed Razorpay errors retain their ConvexError data", async () => {
   const error = new ConvexError({
     code: "RAZORPAY_PROVIDER_REJECTED",
     message: "Rejected",
-    retryable: false,
   });
   expect(isRazorpayError(error)).toBe(true);
   expect(isRazorpayError(new ConvexError({ code: "OTHER", message: "Other" }))).toBe(false);
@@ -202,7 +206,7 @@ function routeHandler(
     });
   const handler = http.exactRoutes.get(path)?.get("POST");
   if (!handler) throw new Error("Missing webhook route");
-  // The router's public type hides the registered action handler; the test invokes it directly.
+
   return handler as typeof handler & {
     _handler: (ctx: ReturnType<typeof mockContext>, request: Request) => Promise<Response>;
   };
@@ -315,4 +319,20 @@ describe("registered webhook route", () => {
     );
     expect((await invokeRoute(handler, ctx, request())).status).toBe(500);
   });
+});
+
+test("undeclared caller testMode never reaches component arguments", async () => {
+  const ctx = mockContext();
+  ctx.runAction.mockResolvedValueOnce({ order: { razorpayId: "order_fixture" } });
+  const client = new Razorpay(components.razorpay);
+  const args = { amount: 1000, currency: "INR", testMode: true };
+  await client.orders.create(ctx, args);
+  expect(ctx.runAction.mock.calls[0]?.[1]?.testMode).toBeUndefined();
+});
+
+test("webhook routes preserve the leading UTF-8 BOM for signature verification", async () => {
+  const handler = routeHandler();
+  const ctx = mockContext();
+  await invokeRoute(handler, ctx, request("\ufeff{}"));
+  expect(ctx.runAction.mock.calls[0]?.[1]?.body).toBe("\ufeff{}");
 });

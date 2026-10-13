@@ -25,3 +25,9 @@ export function restoreRazorpayTestState(): void {
   vi.unstubAllGlobals();
   vi.useRealTimers();
 }
+
+declare global {
+  interface ImportMeta {
+    glob<T = unknown>(pattern: string | string[]): Record<string, () => Promise<T>>;
+  }
+}

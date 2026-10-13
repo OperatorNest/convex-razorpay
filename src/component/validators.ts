@@ -17,19 +17,12 @@ export const pageArgs = {
 };
 
 export function validateCurrency(currency: string): void {
-  if (!/^[A-Z]{3}$/.test(currency))
-    throw razorpayError(
-      "RAZORPAY_INVALID_ARGUMENT",
-      "Currency must be a three-letter uppercase code",
-    );
+  if (!/^[A-Z]{3}$/.test(currency)) throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
 }
 
 export function validateAmount(amount: number, minimum = 1): void {
   if (!Number.isSafeInteger(amount) || amount < minimum)
-    throw razorpayError(
-      "RAZORPAY_INVALID_ARGUMENT",
-      "Amount must be an integer in currency subunits",
-    );
+    throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
 }
 
 export function validatePage(count?: number, skip?: number): { count: number; skip: number } {
@@ -43,24 +36,20 @@ export function validatePage(count?: number, skip?: number): { count: number; sk
     offset < 0 ||
     offset > 900
   )
-    throw razorpayError("RAZORPAY_INVALID_ARGUMENT", "Invalid page size or offset");
+    throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
   return { count: cappedCount, skip: offset };
 }
 
-/** Order and refund receipts: 1-40 printable ASCII characters. */
-export function validateReceipt(receipt: string | undefined, label: string): void {
+export function validateReceipt(receipt: string | undefined): void {
   if (receipt === undefined) return;
   if (receipt.length === 0 || receipt.length > 40 || !/^[\x20-\x7e]+$/.test(receipt))
-    throw razorpayError("RAZORPAY_INVALID_ARGUMENT", `Invalid ${label} receipt`);
+    throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
 }
 
 export function validateIdempotencyKey(key?: string): void {
   if (key === undefined) return;
   if (!/^[A-Za-z0-9_-]{10,128}$/.test(key)) {
-    throw razorpayError(
-      "RAZORPAY_INVALID_ARGUMENT",
-      "Idempotency key must contain 10-128 letters, digits, hyphens, or underscores",
-    );
+    throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
   }
 }
 

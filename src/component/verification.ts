@@ -18,7 +18,7 @@ export const checkout = action({
     orderId: v.string(),
     paymentId: v.string(),
     signature: v.string(),
-    // When given, must equal the order's userId. Omitting it skips the ownership check.
+
     userId: v.optional(v.string()),
     testMode: v.optional(v.boolean()),
   },
@@ -33,33 +33,28 @@ export const checkout = action({
         args.signature,
       ))
     ) {
-      throw razorpayError("RAZORPAY_INVALID_ARGUMENT", "Invalid checkout signature");
+      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     }
     const order = await ctx.runQuery(internal.lookup.order, { id: args.orderId });
-    if (!order) throw razorpayError("RAZORPAY_NOT_FOUND", "Checkout order not found");
+    if (!order) throw razorpayError("RAZORPAY_NOT_FOUND");
     if (order.createdThroughComponent !== true) {
-      throw razorpayError(
-        "RAZORPAY_INVALID_ARGUMENT",
-        "Checkout order was not created through this component",
-      );
+      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     }
     const testMode = isTestMode(args.testMode);
-    assertModeMatches(order, testMode, "order");
+    assertModeMatches(order, testMode);
     if (args.userId !== undefined && order.userId !== args.userId) {
-      throw razorpayError("RAZORPAY_INVALID_ARGUMENT", "Checkout order belongs to another user");
+      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     }
     if (testMode) {
-      // Test mode never contacts Razorpay: confirm against the mirrored payment instead.
       const local = await ctx.runQuery(internal.lookup.payment, { id: args.paymentId });
-      if (!local) throw razorpayError("RAZORPAY_NOT_FOUND", "Payment not found in test mode");
-      assertModeMatches(local, true, "payment");
-      if (local.orderId !== args.orderId)
-        throw razorpayError("RAZORPAY_INVALID_ARGUMENT", "Checkout payment identity mismatch");
-      if (local.amount !== order.amount || local.currency !== order.currency) {
-        throw razorpayError(
-          "RAZORPAY_INVALID_ARGUMENT",
-          "Checkout payment amount or currency mismatch",
-        );
+      if (!local) throw razorpayError("RAZORPAY_NOT_FOUND");
+      assertModeMatches(local, true);
+      if (local.orderId !== args.orderId) throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
+      if (
+        (order.partialPayment ? local.amount > order.amount : local.amount !== order.amount) ||
+        local.currency !== order.currency
+      ) {
+        throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
       }
     } else {
       const payment = await requestProvider(
@@ -68,13 +63,16 @@ export const checkout = action({
         { idempotent: true },
       );
       if (record(payment).id !== args.paymentId || record(payment).order_id !== args.orderId) {
-        throw razorpayError("RAZORPAY_INVALID_ARGUMENT", "Checkout payment identity mismatch");
+        throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
       }
-      if (record(payment).amount !== order.amount || record(payment).currency !== order.currency) {
-        throw razorpayError(
-          "RAZORPAY_INVALID_ARGUMENT",
-          "Checkout payment amount or currency mismatch",
-        );
+      if (
+        (order.partialPayment
+          ? typeof record(payment).amount !== "number" ||
+            Number(record(payment).amount) > order.amount
+          : record(payment).amount !== order.amount) ||
+        record(payment).currency !== order.currency
+      ) {
+        throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
       }
       await ctx.runMutation(internal.mutations.putPayment, {
         raw: payment,
@@ -95,7 +93,7 @@ export const subscriptionCheckout = action({
     subscriptionId: v.string(),
     paymentId: v.string(),
     signature: v.string(),
-    // When given, must equal the subscription's userId. Omitting it skips the ownership check.
+
     userId: v.optional(v.string()),
     testMode: v.optional(v.boolean()),
   },
@@ -110,30 +108,22 @@ export const subscriptionCheckout = action({
         args.signature,
       ))
     ) {
-      throw razorpayError("RAZORPAY_INVALID_ARGUMENT", "Invalid subscription checkout signature");
+      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     }
     const mirrored = await ctx.runQuery(internal.lookup.subscription, { id: args.subscriptionId });
-    if (!mirrored) throw razorpayError("RAZORPAY_NOT_FOUND", "Checkout subscription not found");
+    if (!mirrored) throw razorpayError("RAZORPAY_NOT_FOUND");
     if (mirrored.createdThroughComponent !== true) {
-      throw razorpayError(
-        "RAZORPAY_INVALID_ARGUMENT",
-        "Checkout subscription was not created through this component",
-      );
+      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     }
     const testMode = isTestMode(args.testMode);
-    assertModeMatches(mirrored, testMode, "subscription");
+    assertModeMatches(mirrored, testMode);
     if (args.userId !== undefined && mirrored.userId !== args.userId) {
-      throw razorpayError(
-        "RAZORPAY_INVALID_ARGUMENT",
-        "Checkout subscription belongs to another user",
-      );
+      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     }
     if (testMode) {
-      // Test mode never contacts Razorpay: confirm against the mirrored payment instead.
       const localPayment = await ctx.runQuery(internal.lookup.payment, { id: args.paymentId });
-      if (!localPayment)
-        throw razorpayError("RAZORPAY_NOT_FOUND", "Payment not found in test mode");
-      assertModeMatches(localPayment, true, "payment");
+      if (!localPayment) throw razorpayError("RAZORPAY_NOT_FOUND");
+      assertModeMatches(localPayment, true);
     } else {
       const subscription = await requestProvider(
         "GET",
@@ -141,7 +131,7 @@ export const subscriptionCheckout = action({
         { idempotent: true },
       );
       if (record(subscription).id !== args.subscriptionId)
-        throw razorpayError("RAZORPAY_INVALID_ARGUMENT", "Subscription identity mismatch");
+        throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
       await ctx.runMutation(internal.mutations.putSubscription, {
         raw: subscription,
         observedAt: Date.now(),
@@ -152,8 +142,7 @@ export const subscriptionCheckout = action({
         `/payments/${encodeURIComponent(args.paymentId)}`,
         { idempotent: true },
       );
-      if (record(payment).id !== args.paymentId)
-        throw razorpayError("RAZORPAY_INVALID_ARGUMENT", "Payment identity mismatch");
+      if (record(payment).id !== args.paymentId) throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
       await ctx.runMutation(internal.mutations.putPayment, {
         raw: payment,
         observedAt: Date.now(),
@@ -178,8 +167,7 @@ export const paymentLink = action({
   },
   returns: v.literal(true),
   handler: async (_ctx, args): Promise<true> => {
-    if (!env.RAZORPAY_KEY_SECRET)
-      throw razorpayError("RAZORPAY_NOT_CONFIGURED", "Razorpay API credentials are not configured");
+    if (!env.RAZORPAY_KEY_SECRET) throw razorpayError("RAZORPAY_NOT_CONFIGURED");
     if (
       !(await verifyPaymentLinkCallback(
         env.RAZORPAY_KEY_SECRET,
@@ -190,7 +178,7 @@ export const paymentLink = action({
         args.signature,
       ))
     ) {
-      throw razorpayError("RAZORPAY_INVALID_ARGUMENT", "Invalid payment link signature");
+      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     }
     return true;
   },

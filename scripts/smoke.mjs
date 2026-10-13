@@ -1,17 +1,38 @@
-// Runs the example app against an anonymous local Convex deployment.
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHmac, randomBytes } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { join, resolve as resolvePath } from "node:path";
+import { tmpdir } from "node:os";
+import { createServer } from "node:net";
+import { stopChild } from "./e2e-process.mjs";
 import { acquireLock } from "./with-local-lock.mjs";
 
+const root = resolvePath(import.meta.dirname, "..");
+const workspace = mkdtempSync(join(tmpdir(), "razorpay-smoke-"));
 const results = [];
 const failures = [];
+
+function localChildEnv() {
+  const env = { ...process.env, CONVEX_AGENT_MODE: "anonymous" };
+  for (const name of [
+    "CONVEX_DEPLOYMENT",
+    "CONVEX_DEPLOY_KEY",
+    "CONVEX_DEPLOYMENT_TOKEN",
+    "CONVEX_SELF_HOSTED_URL",
+    "CONVEX_SELF_HOSTED_ADMIN_KEY",
+    "CONVEX_URL",
+    "CONVEX_SITE_URL",
+  ])
+    delete env[name];
+  return env;
+}
 
 function convex(...args) {
   return execFileSync("pnpm", ["exec", "convex", ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, CONVEX_AGENT_MODE: "anonymous" },
+    env: localChildEnv(),
+    cwd: workspace,
   });
 }
 
@@ -30,28 +51,18 @@ function check(name, ok, detail) {
 
 const hmac = (secret, text) => createHmac("sha256", secret).update(text).digest("hex");
 
-// The CLI starts the anonymous backend only while a command runs and stops it afterwards, which
-// leaves no HTTP site to POST webhooks to. Keep one `convex dev` we started alive for the run and
-// stop only that process afterwards.
 let devServer;
 let devOutput = "";
 
 function stopDevServer() {
-  if (devServer && devServer.exitCode === null) devServer.kill("SIGTERM");
-  if (!devServer || devServer.exitCode !== null) return Promise.resolve();
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      if (devServer.exitCode === null) devServer.kill("SIGKILL");
-      resolve();
-    }, 10_000);
-    devServer.once("exit", () => {
-      clearTimeout(timer);
-      resolve();
-    });
-  });
+  return stopChild(devServer);
 }
 process.on("exit", () => {
-  if (devServer?.exitCode === null) devServer.kill("SIGTERM");
+  if (devServer?.pid && devServer.exitCode === null) {
+    try {
+      process.kill(-devServer.pid, "SIGTERM");
+    } catch {}
+  }
 });
 process.once("SIGINT", async () => {
   await stopDevServer();
@@ -62,12 +73,41 @@ process.once("SIGTERM", async () => {
   process.exit(143);
 });
 
-function startDevServer() {
-  return new Promise((resolve, reject) => {
-    const child = spawn("pnpm", ["exec", "convex", "dev", "--tail-logs", "disable"], {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, CONVEX_AGENT_MODE: "anonymous" },
-    });
+async function freePort() {
+  const server = createServer();
+  await new Promise((resolvePort, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolvePort);
+  });
+  const port = server.address().port;
+  await new Promise((resolveClose) => server.close(resolveClose));
+  return port;
+}
+
+async function startDevServer() {
+  const cloud = await freePort();
+  const site = await freePort();
+  return new Promise((resolveReady, reject) => {
+    const child = spawn(
+      "pnpm",
+      [
+        "exec",
+        "convex",
+        "dev",
+        "--tail-logs",
+        "disable",
+        "--local-cloud-port",
+        String(cloud),
+        "--local-site-port",
+        String(site),
+      ],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+        env: localChildEnv(),
+        cwd: workspace,
+        detached: true,
+      },
+    );
     devServer = child;
     devOutput = "";
     const timer = setTimeout(
@@ -78,11 +118,15 @@ function startDevServer() {
       devOutput += chunk;
       if (/Convex functions ready/.test(devOutput)) {
         clearTimeout(timer);
-        resolve();
+        resolveReady();
       }
     };
     child.stdout.on("data", onData);
     child.stderr.on("data", onData);
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
     child.on("exit", (code) => {
       clearTimeout(timer);
       reject(new Error(`convex dev exited with ${code}:\n${devOutput}`));
@@ -90,20 +134,9 @@ function startDevServer() {
   });
 }
 
-async function startDevServerWithRetry() {
-  try {
-    await startDevServer();
-  } catch (error) {
-    // Another process may have restarted the shared local backend; retry once.
-    console.log(`convex dev failed (${String(error.message).split("\n")[0]}); retrying once`);
-    await stopDevServer();
-    await startDevServer();
-  }
-}
-
 function localEnv(name) {
-  if (!existsSync(".env.local")) return undefined;
-  const line = readFileSync(".env.local", "utf8")
+  if (!existsSync(join(workspace, ".env.local"))) return undefined;
+  const line = readFileSync(join(workspace, ".env.local"), "utf8")
     .split("\n")
     .find((l) => l.startsWith(`${name}=`));
   return line?.slice(name.length + 1).trim();
@@ -154,7 +187,8 @@ function setLocalEnv(name, value) {
     input: value,
     stdio: ["pipe", "ignore", "pipe"],
     encoding: "utf8",
-    env: { ...process.env, CONVEX_AGENT_MODE: "anonymous" },
+    env: localChildEnv(),
+    cwd: workspace,
   });
   if (result.status !== 0) throw new Error(`Could not set local ${name}`);
 }
@@ -177,14 +211,13 @@ async function post(url, body, headers) {
 
 const release = await acquireLock();
 try {
-  console.log("1. Building the package and starting an anonymous local deployment...");
-  execFileSync("pnpm", ["build"], { stdio: "ignore" });
-  if (!localEnv("CONVEX_DEPLOYMENT")) convex("init");
-  if (!localEnv("CONVEX_DEPLOYMENT")?.startsWith("anonymous:"))
-    throw new Error("Smoke requires an anonymous local Convex deployment");
-  await startDevServerWithRetry();
+  console.log("1. Building the package and starting a disposable anonymous deployment...");
+  execFileSync("pnpm", ["build"], { stdio: "ignore", env: localChildEnv(), cwd: root });
+  for (const path of ["src", "dist", "example", "package.json", "convex.json"])
+    cpSync(join(root, path), join(workspace, path), { recursive: true });
+  symlinkSync(join(root, "node_modules"), join(workspace, "node_modules"), "dir");
+  await startDevServer();
 
-  // Fabricated credentials. Test mode never contacts Razorpay.
   const webhookSecret = randomBytes(24).toString("hex");
   const keySecret = randomBytes(24).toString("hex");
   for (const [name, value] of Object.entries({
@@ -221,7 +254,6 @@ try {
   check("subscription mirror readable", before.subscription?.razorpayId === setup.subscriptionId);
   check("no payments before the webhook", before.payments.length === 0);
 
-  // c. Webhook end to end (payment.captured arrives before the app verifies the callback).
   const paymentId = `pay_${randomBytes(7).toString("hex")}`;
   const capturedBody = envelope(runId, {
     id: paymentId,
@@ -337,7 +369,6 @@ try {
     afterOdd.payments.find((p) => p.razorpayId === oddPaymentId)?.status === "unknown",
   );
 
-  // b. Checkout verification (test mode confirms against the mirrored payment, no Razorpay call).
   const signature = hmac(keySecret, `${setup.orderId}|${paymentId}`);
   const verify = (sig, user = userId) =>
     run("smoke:verifyCheckout", {
@@ -431,6 +462,7 @@ try {
 } finally {
   await stopDevServer();
   release();
+  rmSync(workspace, { recursive: true, force: true });
 }
 
 console.log("\nSmoke summary");

@@ -1,6 +1,7 @@
 import { getOrThrow, razorpayError } from "../shared/errors.js";
 import type { MutationCtx } from "./_generated/server.js";
 import type { Doc } from "./_generated/dataModel.js";
+import { assertModeMatches } from "./provider.js";
 import { statusAdvances } from "../shared/validation.js";
 import {
   customerFields,
@@ -11,10 +12,6 @@ import {
   subscriptionFields,
 } from "./mapping.js";
 
-/**
- * Every mirrored row records the mode it was observed in. A row's mode is fixed at insert and
- * never changed by later updates; only the caller that inserts decides it.
- */
 export interface ModeLinkage extends Linkage {
   testMode: boolean;
 }
@@ -60,22 +57,20 @@ function refundLinkFields(link: Linkage) {
 async function completeClaim(
   ctx: MutationCtx,
   resource: "order" | "plan" | "subscription",
-  link: Linkage,
+  link: ModeLinkage,
   razorpayId: string,
 ): Promise<void> {
   const key = link.idempotencyKey;
-  if (!key) return;
+  if (!key || !link.requestFingerprint) return;
   const claim = await ctx.db
     .query("idempotencyRequests")
-    .withIndex("by_resource_and_key", (q) => q.eq("resource", resource).eq("key", key))
+    .withIndex("by_resource_and_testMode_and_key", (q) =>
+      q.eq("resource", resource).eq("testMode", link.testMode).eq("key", key),
+    )
     .unique();
-  if (!claim) {
-    if (link.requestFingerprint)
-      throw razorpayError("RAZORPAY_INVALID_ARGUMENT", "Missing idempotency claim");
-    return;
-  }
-  if (link.requestFingerprint && claim.fingerprint !== link.requestFingerprint)
-    throw razorpayError("RAZORPAY_IDEMPOTENCY_CONFLICT", "Idempotency claim mismatch");
+  if (!claim) throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
+  if (claim.fingerprint !== link.requestFingerprint)
+    throw razorpayError("RAZORPAY_IDEMPOTENCY_CONFLICT");
   await ctx.db.patch("idempotencyRequests", claim["_id"], {
     status: "completed",
     razorpayId,
@@ -90,19 +85,14 @@ export async function applyOrder(
   link: ModeLinkage,
 ): Promise<Doc<"orders">> {
   const next = orderFields(raw, observedAt);
-  link = {
-    ...link,
-    userId: link.userId ?? next.notes.userId,
-    externalId: link.externalId ?? next.notes.externalId,
-    idempotencyKey: link.idempotencyKey ?? next.notes.operatornestIdempotencyKey,
-  };
   const current = await ctx.db
     .query("orders")
     .withIndex("by_razorpayId", (q) => q.eq("razorpayId", next.razorpayId))
     .unique();
   if (current) {
+    assertModeMatches(current, link.testMode);
     if (current.amount !== next.amount || current.currency !== next.currency)
-      throw razorpayError("RAZORPAY_INVALID_ARGUMENT", "Razorpay order identity changed");
+      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     const advances = statusAdvances(
       "order",
       current.status,
@@ -130,7 +120,16 @@ export async function applyOrder(
       }),
     });
     await completeClaim(ctx, "order", link, next.razorpayId);
-    return getOrThrow(await ctx.db.get("orders", current["_id"]), "Updated mirror is missing");
+    return getOrThrow(await ctx.db.get("orders", current["_id"]));
+  }
+  if (link.testMode && link.createdThroughComponent && next.receipt) {
+    const duplicate = await ctx.db
+      .query("orders")
+      .withIndex("by_testMode_and_receipt", (q) =>
+        q.eq("testMode", true).eq("receipt", next.receipt),
+      )
+      .first();
+    if (duplicate) throw razorpayError("RAZORPAY_PROVIDER_REJECTED", { providerStatus: 400 });
   }
   const id = await ctx.db.insert("orders", {
     ...next,
@@ -138,7 +137,7 @@ export async function applyOrder(
     testMode: link.testMode,
   });
   await completeClaim(ctx, "order", link, next.razorpayId);
-  return getOrThrow(await ctx.db.get("orders", id), "Updated mirror is missing");
+  return getOrThrow(await ctx.db.get("orders", id));
 }
 
 export async function applyPayment(
@@ -159,19 +158,33 @@ export async function applyPayment(
     .query("payments")
     .withIndex("by_razorpayId", (q) => q.eq("razorpayId", next.razorpayId))
     .unique();
+  const orderId = next.orderId ?? current?.orderId;
+  const order = orderId
+    ? await ctx.db
+        .query("orders")
+        .withIndex("by_testMode_and_razorpayId", (q) =>
+          q.eq("testMode", link.testMode).eq("razorpayId", orderId),
+        )
+        .unique()
+    : null;
+  const ownership = mirrorFields({
+    userId: current?.userId ?? order?.userId,
+    externalId: current?.externalId ?? order?.externalId,
+  });
   if (current) {
+    assertModeMatches(current, link.testMode);
     if (current.amount !== next.amount || current.currency !== next.currency)
-      throw razorpayError("RAZORPAY_INVALID_ARGUMENT", "Razorpay payment identity changed");
+      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     if (current.orderId && next.orderId && current.orderId !== next.orderId)
-      throw razorpayError("RAZORPAY_INVALID_ARGUMENT", "Razorpay payment order changed");
+      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     if (
       current.subscriptionId &&
       next.subscriptionId &&
       current.subscriptionId !== next.subscriptionId
     )
-      throw razorpayError("RAZORPAY_INVALID_ARGUMENT", "Razorpay payment subscription changed");
+      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     if (current.invoiceId && next.invoiceId && current.invoiceId !== next.invoiceId)
-      throw razorpayError("RAZORPAY_INVALID_ARGUMENT", "Razorpay payment invoice changed");
+      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     if (
       statusAdvances(
         "payment",
@@ -184,6 +197,7 @@ export async function applyPayment(
       const amountRefunded = Math.max(current.amountRefunded, next.amountRefunded);
       await ctx.db.patch("payments", current["_id"], {
         ...next,
+        ...ownership,
         verified: current.verified,
         ...((next.orderId ?? current.orderId) === undefined
           ? {}
@@ -206,6 +220,7 @@ export async function applyPayment(
       });
     } else {
       await ctx.db.patch("payments", current["_id"], {
+        ...ownership,
         ...(next.rawStatus === undefined ? {} : { rawStatus: next.rawStatus }),
         ...((next.subscriptionId ?? current.subscriptionId) === undefined
           ? {}
@@ -215,13 +230,14 @@ export async function applyPayment(
           : { invoiceId: next.invoiceId ?? current.invoiceId }),
       });
     }
-    return getOrThrow(await ctx.db.get("payments", current["_id"]), "Updated mirror is missing");
+    return getOrThrow(await ctx.db.get("payments", current["_id"]));
   }
   const id = await ctx.db.insert("payments", {
     ...next,
+    ...ownership,
     testMode: link.testMode,
   });
-  return getOrThrow(await ctx.db.get("payments", id), "Updated mirror is missing");
+  return getOrThrow(await ctx.db.get("payments", id));
 }
 
 export async function applyRefund(
@@ -231,18 +247,24 @@ export async function applyRefund(
   link: ModeLinkage,
 ): Promise<Doc<"refunds">> {
   const next = refundFields(raw, observedAt);
+  const payment = await ctx.db
+    .query("payments")
+    .withIndex("by_razorpayId", (q) => q.eq("razorpayId", next.paymentId))
+    .unique();
   const linked = {
     ...link,
-    userId: link.userId ?? next.notes.userId,
-    externalId: link.externalId ?? next.notes.externalId,
+    userId: link.userId ?? (payment?.testMode === link.testMode ? payment.userId : undefined),
+    externalId:
+      link.externalId ?? (payment?.testMode === link.testMode ? payment.externalId : undefined),
   };
   const current = await ctx.db
     .query("refunds")
     .withIndex("by_razorpayId", (q) => q.eq("razorpayId", next.razorpayId))
     .unique();
   if (current) {
+    assertModeMatches(current, link.testMode);
     if (current.amount !== next.amount || current.paymentId !== next.paymentId)
-      throw razorpayError("RAZORPAY_INVALID_ARGUMENT", "Razorpay refund identity changed");
+      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     const advances =
       (current.status !== "processed" || next.status === "processed") &&
       statusAdvances("refund", current.status, next.status);
@@ -256,14 +278,14 @@ export async function applyRefund(
         metadata: current.metadata ?? linked.metadata,
       }),
     });
-    return getOrThrow(await ctx.db.get("refunds", current["_id"]), "Updated mirror is missing");
+    return getOrThrow(await ctx.db.get("refunds", current["_id"]));
   }
   const id = await ctx.db.insert("refunds", {
     ...next,
     ...refundLinkFields(linked),
     testMode: link.testMode,
   });
-  return getOrThrow(await ctx.db.get("refunds", id), "Updated mirror is missing");
+  return getOrThrow(await ctx.db.get("refunds", id));
 }
 
 export async function applyCustomer(
@@ -273,27 +295,14 @@ export async function applyCustomer(
   link: ModeLinkage,
 ): Promise<Doc<"customers">> {
   const next = customerFields(raw, observedAt);
-  link = {
-    ...link,
-    userId: link.userId ?? next.notes.userId,
-    externalId: link.externalId ?? next.notes.externalId,
-  };
-  if (link.userId && next.notes.userId && link.userId !== next.notes.userId) {
-    throw razorpayError(
-      "RAZORPAY_CUSTOMER_CONFLICT",
-      "Provider customer is linked to a different user",
-    );
-  }
   const current = await ctx.db
     .query("customers")
     .withIndex("by_razorpayId", (q) => q.eq("razorpayId", next.razorpayId))
     .unique();
   if (current) {
+    assertModeMatches(current, link.testMode);
     if (current.userId && link.userId && current.userId !== link.userId) {
-      throw razorpayError(
-        "RAZORPAY_CUSTOMER_CONFLICT",
-        "Provider customer is linked to a different user",
-      );
+      throw razorpayError("RAZORPAY_CUSTOMER_CONFLICT");
     }
     await ctx.db.patch("customers", current["_id"], {
       ...(next.updatedAtProvider >= current.updatedAtProvider ? next : {}),
@@ -303,15 +312,21 @@ export async function applyCustomer(
         metadata: current.metadata ?? link.metadata,
         idempotencyKey: current.idempotencyKey ?? link.idempotencyKey,
       }),
+      ...(link.requestFingerprint === undefined
+        ? {}
+        : { requestFingerprint: current.requestFingerprint ?? link.requestFingerprint }),
     });
-    return getOrThrow(await ctx.db.get("customers", current["_id"]), "Updated mirror is missing");
+    return getOrThrow(await ctx.db.get("customers", current["_id"]));
   }
   const id = await ctx.db.insert("customers", {
     ...next,
     ...mirrorFields(link),
+    ...(link.requestFingerprint === undefined
+      ? {}
+      : { requestFingerprint: link.requestFingerprint }),
     testMode: link.testMode,
   });
-  return getOrThrow(await ctx.db.get("customers", id), "Updated mirror is missing");
+  return getOrThrow(await ctx.db.get("customers", id));
 }
 
 export async function applyPlan(
@@ -321,19 +336,14 @@ export async function applyPlan(
   link: ModeLinkage,
 ): Promise<Doc<"plans">> {
   const next = planFields(raw, observedAt);
-  link = {
-    ...link,
-    userId: link.userId ?? next.notes.userId,
-    externalId: link.externalId ?? next.notes.externalId,
-    idempotencyKey: link.idempotencyKey ?? next.notes.operatornestIdempotencyKey,
-  };
   const current = await ctx.db
     .query("plans")
     .withIndex("by_razorpayId", (q) => q.eq("razorpayId", next.razorpayId))
     .unique();
   if (current) {
+    assertModeMatches(current, link.testMode);
     if (current.amount !== next.amount || current.currency !== next.currency)
-      throw razorpayError("RAZORPAY_INVALID_ARGUMENT", "Razorpay plan identity changed");
+      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     await ctx.db.patch("plans", current["_id"], {
       ...mirrorFields({
         userId: current.userId ?? link.userId,
@@ -343,7 +353,7 @@ export async function applyPlan(
       }),
     });
     await completeClaim(ctx, "plan", link, next.razorpayId);
-    return getOrThrow(await ctx.db.get("plans", current["_id"]), "Updated mirror is missing");
+    return getOrThrow(await ctx.db.get("plans", current["_id"]));
   }
   const id = await ctx.db.insert("plans", {
     ...next,
@@ -351,43 +361,53 @@ export async function applyPlan(
     testMode: link.testMode,
   });
   await completeClaim(ctx, "plan", link, next.razorpayId);
-  return getOrThrow(await ctx.db.get("plans", id), "Updated mirror is missing");
+  return getOrThrow(await ctx.db.get("plans", id));
 }
 
 export async function applySubscription(
   ctx: MutationCtx,
   raw: unknown,
   observedAt: number,
-  link: ModeLinkage,
+  link: ModeLinkage & { webhookCreatedAtProvider?: number },
 ): Promise<Doc<"subscriptions">> {
   const next = subscriptionFields(raw, observedAt);
-  link = {
-    ...link,
-    userId: link.userId ?? next.notes.userId,
-    externalId: link.externalId ?? next.notes.externalId,
-    idempotencyKey: link.idempotencyKey ?? next.notes.operatornestIdempotencyKey,
-  };
   const current = await ctx.db
     .query("subscriptions")
     .withIndex("by_razorpayId", (q) => q.eq("razorpayId", next.razorpayId))
     .unique();
   if (current) {
-    const advances = statusAdvances(
-      "subscription",
-      current.status,
-      next.status,
-      [current.paidCount],
-      [next.paidCount],
-    );
+    assertModeMatches(current, link.testMode);
+    const webhookTime = link.webhookCreatedAtProvider;
+    const isCurrentWebhook =
+      webhookTime !== undefined &&
+      (current.lastWebhookCreatedAtProvider === undefined ||
+        webhookTime >= current.lastWebhookCreatedAtProvider);
+    const advances =
+      webhookTime === undefined ||
+      (isCurrentWebhook &&
+        statusAdvances(
+          "subscription",
+          current.status,
+          next.status,
+          [current.paidCount],
+          [next.paidCount],
+        ));
     await ctx.db.patch("subscriptions", current["_id"], {
+      ...(isCurrentWebhook ? { lastWebhookCreatedAtProvider: webhookTime } : {}),
       ...(advances
         ? {
             ...next,
-            paidCount: Math.max(current.paidCount, next.paidCount),
-            remainingCount: Math.min(
-              next.remainingCount,
-              Math.max(0, next.totalCount - Math.max(current.paidCount, next.paidCount)),
-            ),
+            paidCount:
+              webhookTime === undefined
+                ? next.paidCount
+                : Math.max(current.paidCount, next.paidCount),
+            remainingCount:
+              webhookTime === undefined
+                ? next.remainingCount
+                : Math.min(
+                    next.remainingCount,
+                    Math.max(0, next.totalCount - Math.max(current.paidCount, next.paidCount)),
+                  ),
           }
         : next.rawStatus === undefined
           ? {}
@@ -403,17 +423,17 @@ export async function applySubscription(
         : {}),
     });
     await completeClaim(ctx, "subscription", link, next.razorpayId);
-    return getOrThrow(
-      await ctx.db.get("subscriptions", current["_id"]),
-      "Updated mirror is missing",
-    );
+    return getOrThrow(await ctx.db.get("subscriptions", current["_id"]));
   }
   const id = await ctx.db.insert("subscriptions", {
     ...next,
+    ...(link.webhookCreatedAtProvider === undefined
+      ? {}
+      : { lastWebhookCreatedAtProvider: link.webhookCreatedAtProvider }),
     ...mirrorFields(link),
     ...(link.createdThroughComponent === true ? { createdThroughComponent: true } : {}),
     testMode: link.testMode,
   });
   await completeClaim(ctx, "subscription", link, next.razorpayId);
-  return getOrThrow(await ctx.db.get("subscriptions", id), "Updated mirror is missing");
+  return getOrThrow(await ctx.db.get("subscriptions", id));
 }

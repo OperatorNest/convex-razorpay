@@ -51,7 +51,7 @@ test("refund idempotency key goes to X-Refund-Idempotency", async () => {
   expect(init.headers).toMatchObject({ "X-Refund-Idempotency": "refund-key-123" });
 });
 
-const retryable = async (
+const providerFailure = async (
   method: "GET" | "POST",
   status: number,
   idempotent: boolean,
@@ -77,13 +77,13 @@ const retryable = async (
   }
 };
 
-test("idempotent GET may retry network, 5xx and 429; unsafe POST cannot", async () => {
-  const get500 = await retryable("GET", 500, true);
-  expect(get500).toMatchObject({ data: { retryable: true } });
-  const post500 = await retryable("POST", 500, false);
-  expect(post500).toMatchObject({ data: { retryable: false } });
-  const get429 = await retryable("GET", 429, true);
-  expect(get429).toMatchObject({ data: { retryable: true } });
+test("GET and POST failures expose status and uncertain outcomes", async () => {
+  const get500 = await providerFailure("GET", 500, true);
+  expect(get500).toMatchObject({ data: { code: "RAZORPAY_HTTP_ERROR" } });
+  const post500 = await providerFailure("POST", 500, false);
+  expect(post500).toMatchObject({ data: { code: "RAZORPAY_HTTP_ERROR" } });
+  const get429 = await providerFailure("GET", 429, true);
+  expect(get429).toMatchObject({ data: { code: "RAZORPAY_HTTP_ERROR" } });
   vi.stubGlobal(
     "fetch",
     vi.fn(async () => {
@@ -91,16 +91,20 @@ test("idempotent GET may retry network, 5xx and 429; unsafe POST cannot", async 
     }),
   );
   await expect(requestProvider("GET", "/resource", { idempotent: true })).rejects.toMatchObject({
-    data: { retryable: true },
+    data: { code: "RAZORPAY_NETWORK_ERROR" },
   });
   await expect(requestProvider("POST", "/resource", { idempotent: false })).rejects.toMatchObject({
-    data: { retryable: false },
+    data: { code: "RAZORPAY_NETWORK_ERROR" },
   });
 });
 
-test("keyed refund conflict can retry; plain refund conflict cannot", async () => {
-  expect(await retryable("POST", 409, true, true)).toMatchObject({ data: { retryable: true } });
-  expect(await retryable("POST", 409, false, true)).toMatchObject({ data: { retryable: false } });
+test("refund conflicts expose status without a retry recommendation", async () => {
+  expect(await providerFailure("POST", 409, true, true)).toMatchObject({
+    data: { code: "RAZORPAY_HTTP_ERROR" },
+  });
+  expect(await providerFailure("POST", 409, false, true)).toMatchObject({
+    data: { code: "RAZORPAY_HTTP_ERROR" },
+  });
 });
 
 test("malformed provider JSON has a structured error", async () => {
@@ -109,7 +113,7 @@ test("malformed provider JSON has a structured error", async () => {
     vi.fn(async () => new Response("not json", { status: 502 })),
   );
   await expect(requestProvider("GET", "/resource", { idempotent: true })).rejects.toMatchObject({
-    data: { code: "RAZORPAY_INVALID_RESPONSE", retryable: true },
+    data: { code: "RAZORPAY_INVALID_RESPONSE" },
   });
 });
 
@@ -156,7 +160,7 @@ test("test mode is explicit and missing either credential fails with a typed err
   } catch (error) {
     expect(isRazorpayError(error)).toBe(true);
     expect(error).toMatchObject({ data: { code: "RAZORPAY_NOT_CONFIGURED" } });
-    expect(error instanceof Error ? error.message : "").toMatch(/credentials are not configured/i);
+    expect(error instanceof Error ? error.message : "").toMatch(/credentials are missing/i);
   }
   vi.stubEnv("RAZORPAY_KEY_ID", "rzp_test_public");
   vi.stubEnv("RAZORPAY_KEY_SECRET", undefined);
@@ -183,7 +187,7 @@ test("test mode requires explicit option or env opt-in and rejects a live key", 
 
 test("page validation enforces the documented skip ceiling", () => {
   expect(validatePage(10, 900)).toEqual({ count: 10, skip: 900 });
-  expect(() => validatePage(10, 901)).toThrow("Invalid page size or offset");
+  expect(() => validatePage(10, 901)).toThrow("An argument is invalid, missing or out of bounds.");
 });
 
 test("request timer covers response parsing and is cleared on success or programming failure", async () => {

@@ -1,13 +1,5 @@
-# ADR 0001: Synchronous Razorpay operations
+# ADR 0001: Synchronous provider operations
 
-## Context
+Provider calls run in Convex actions and return a result or classified error to the caller. The component has no queue or automatic retry loop. Apps needing durable background execution must supply orchestration.
 
-Provider operations return their result directly to the initiating app. Razorpay order, refund, customer, plan, and subscription calls are app-initiated operations whose result must be returned to that app action. A generic retry after an ambiguous payment outcome could create duplicate financial state.
-
-## Decision
-
-The caller awaits each provider call from a Convex action. The component uses local idempotency claims where applicable, requires a key or receipt for refunds, and reconciles ambiguous plan and subscription creates before retrying. It has no runtime queue dependency or automatic provider retry loop.
-
-## Consequences
-
-The initiating app action observes the result or a classified error. The app must choose when to retry. Delivery does not continue after the caller ends, so workflows requiring durable background execution must add their own orchestration around the component.
+Keyed order, plan and subscription creates reserve a mode-scoped local claim before POST. Concurrent or uncertain outcomes remain pending. Retries reconcile through at most 20 pages of 100 provider records; any unresolved claim returns `RAZORPAY_IDEMPOTENCY_PENDING` without another POST. Apps must resolve the provider outcome before releasing a claim. Refunds use the provider idempotency header. Customer keys deduplicate completed mirrors without reserving a pending claim.

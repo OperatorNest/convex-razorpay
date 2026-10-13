@@ -7,9 +7,7 @@ export async function stopChild(child) {
   const killGroup = (signal) => {
     try {
       process.kill(-child.pid, signal);
-    } catch {
-      // The owned process group already exited.
-    }
+    } catch {}
   };
   killGroup("SIGTERM");
   let timer;

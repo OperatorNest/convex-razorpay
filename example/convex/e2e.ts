@@ -1,4 +1,3 @@
-// Internal maintainer harness called only by `scripts/e2e.mjs` through `convex run`.
 import { Razorpay, checkoutOptions } from "@operatornest/convex-razorpay";
 import { ConvexError, v } from "convex/values";
 import { components } from "./_generated/api.js";

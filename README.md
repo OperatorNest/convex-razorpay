@@ -2,8 +2,6 @@
 
 Razorpay payments for Convex: server-side orders, payments, refunds, customers, plans, subscriptions, Checkout verification, and signed webhook mirroring in Convex's default V8 runtime.
 
-Built against Razorpay's official API documentation and `razorpay-node` v2.9.8 behavior. Provider account behavior, subscription payment-method eligibility, capture settings, and some provider limits remain unconfirmed.
-
 [![CI](https://github.com/OperatorNest/convex-razorpay/actions/workflows/ci.yml/badge.svg)](https://github.com/OperatorNest/convex-razorpay/actions/workflows/ci.yml) [![Release](https://github.com/OperatorNest/convex-razorpay/actions/workflows/release.yml/badge.svg)](https://github.com/OperatorNest/convex-razorpay/actions/workflows/release.yml) [![npm](https://img.shields.io/npm/v/%40operatornest%2Fconvex-razorpay)](https://www.npmjs.com/package/@operatornest/convex-razorpay) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ## Install
@@ -12,14 +10,13 @@ Built against Razorpay's official API documentation and `razorpay-node` v2.9.8 b
 pnpm add @operatornest/convex-razorpay convex@^1.46.0
 ```
 
-`convex` is a peer dependency. This package has no runtime dependencies. Consumers need Node.js 22.19 or newer for their development toolchain.
+`convex` is a peer dependency. This package has no runtime dependencies. Consumers need Node.js 24 or newer for their development toolchain.
 
 ## Configure
 
 Mount the component and bind app environment values to component environment values by reference:
 
 ```ts
-// convex/convex.config.ts
 import { defineApp } from "convex/server";
 import { v } from "convex/values";
 import razorpay from "@operatornest/convex-razorpay/convex.config.js";
@@ -60,14 +57,13 @@ The app sets these values on its Convex deployment. The webhook secret is separa
 App functions must authenticate callers, derive prices from trusted app data, and authorize reads. This example uses an authenticated identity as a linkage key; configure the consuming app's auth provider before calling it.
 
 ```ts
-// convex/billing.ts
 import { Razorpay, sha256Hex } from "@operatornest/convex-razorpay";
 import { ConvexError, v } from "convex/values";
 import { components } from "./_generated/api";
 import { action, query } from "./_generated/server";
 
 const razorpay = new Razorpay(components.razorpay);
-const price = 50000; // Server-owned INR amount in paise.
+const priceInPaise = 50000;
 
 export const createOrder = action({
   args: { cartId: v.string() },
@@ -80,10 +76,10 @@ export const createOrder = action({
   handler: async (ctx, { cartId }) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity)
-      throw new ConvexError({ code: "APP_AUTH_REQUIRED", message: "Authentication required" });
+      throw new ConvexError({ code: "APP_AUTH_REQUIRED", message: "Authentication is required." });
     const idempotencyKey = await sha256Hex(`${identity.tokenIdentifier}|${cartId}`);
     const order = await razorpay.orders.create(ctx, {
-      amount: price,
+      amount: priceInPaise,
       currency: "INR",
       userId: identity.tokenIdentifier,
       idempotencyKey,
@@ -103,14 +99,16 @@ export const getOrder = query({
   handler: async (ctx, { orderId }) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity)
-      throw new ConvexError({ code: "APP_AUTH_REQUIRED", message: "Authentication required" });
+      throw new ConvexError({ code: "APP_AUTH_REQUIRED", message: "Authentication is required." });
     const order = await razorpay.orders.get(ctx, { orderId });
     return order?.userId === identity.tokenIdentifier ? { status: order.status } : null;
   },
 });
 ```
 
-An order's `keyId` is optional in explicit test mode when no key id is configured; supply a real Razorpay test key before opening Checkout.js. Build Checkout.js options with the pure helper `checkoutOptions(order, { name: "My app" })` (import it from the package; it needs no client or context) once a key id is available. Send Checkout's callback to an authenticated action using `razorpay.verification.checkout(ctx, { orderId, paymentId, signature, userId })`. Pass `userId` from your authenticated identity: when given it must equal the order's `userId`, and **omitting it skips the ownership check**. Verification requires a component-created order of the same mode and a payment that is `authorized` or `captured`; `verification.subscriptionCheckout` has the same rules for a component-created subscription. A valid callback signature does not by itself prove capture; fulfill after a captured payment or paid order is confirmed.
+Synthetic orders cannot be used with Checkout.js. For provider Checkout, leave local test mode disabled and configure Razorpay `rzp_test_*` API credentials. `checkoutOptions(order, { name: "My app" })` builds options from a provider-backed order; import this pure helper from the package.
+
+Send Checkout's callback to an authenticated action using `razorpay.verification.checkout(ctx, { orderId, paymentId, signature, userId })`. Derive `userId` from the authenticated identity; omitting it skips the ownership check. Verification requires a component-created order in the selected mode and an authorized or captured payment. Full-payment orders require an equal amount; partial-payment orders accept a positive amount up to the order amount. `verification.subscriptionCheckout` requires a component-created subscription in the selected mode. A verified callback does not prove capture; fulfill only after confirming a captured payment or paid order.
 
 ## Webhooks
 
@@ -129,10 +127,9 @@ registerRoutes(http, components.razorpay, {
 export default http;
 ```
 
-Define the app callback and its table. The [example callback](example/convex/webhookCallback.ts) uses this pattern:
+Define the app callback and its table. The [example callback](https://github.com/OperatorNest/convex-razorpay/blob/main/example/convex/webhookCallback.ts) uses this pattern:
 
 ```ts
-// convex/schema.ts — merge this table into your app schema
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
@@ -145,7 +142,6 @@ export default defineSchema({
 ```
 
 ```ts
-// convex/webhookCallback.ts
 import { v } from "convex/values";
 import { internalMutation } from "./_generated/server";
 
@@ -173,7 +169,7 @@ export const onEvent = internalMutation({
 
 ## API reference
 
-Create `new Razorpay(components.razorpay, { testMode?: boolean, onEvent? })`; `onEvent` is checked against the exported `RazorpayWebhookEventArgs` type. `testMode` is tri-state: `true` enables test mode, an explicit `false` forces live mode even when the component env has `RAZORPAY_TEST_MODE=true`, and `undefined` (the default) defers to that env variable. Every grouped method takes `(ctx, args)`; `args` is an object. Provider calls use app actions, while local mirror reads use app queries. App linkage fields (`userId`, `externalId`, `metadata`) are metadata, never authorization.
+Create `new Razorpay(components.razorpay, { testMode?, onEvent? })`. `testMode` defaults to the component env: `true` enables synthetic operations, `false` forces provider operations, and omission defers to `RAZORPAY_TEST_MODE=true`. This selection also filters local reads. Methods accept only their declared fields; extra fields, including per-call `testMode`, are ignored by the client. Provider calls require action contexts; local reads require query contexts. App linkage fields are metadata, never authorization.
 
 | Client methods                                                                           | `args` after `ctx`                                                                                                                                                | Result                                                        |
 | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
@@ -185,33 +181,46 @@ Create `new Razorpay(components.razorpay, { testMode?: boolean, onEvent? })`; `o
 | `customers.create`, `customers.getOrCreate`                                              | `{ name, email, contact?, gstin?, notes?, ...link }`                                                                                                              | Customer mirror.                                              |
 | `customers.fetch`, `customers.edit`, `customers.getByUser`                               | `{ customerId }`; `{ customerId, name?, email?, contact? }`; `{ userId }`                                                                                         | Customer mirror or mirror/`null` for local read.              |
 | `plans.create`, `plans.fetch`, `plans.list`                                              | `{ period, interval, item, notes?, ...link }`; `{ planId }`; `{ count?, skip? }`                                                                                  | Plan mirror or list of mirrors.                               |
-| `subscriptions.create`, `subscriptions.fetch`                                            | `{ planId, totalCount, quantity?, startAt?, expireBy?, notes?, ...link }`; `{ subscriptionId }`                                                                   | Subscription mirror.                                          |
+| `subscriptions.create`, `subscriptions.fetch`                                            | `{ planId, totalCount, quantity?, startAt?, expireBy?, customerNotify?, offerId?, notes?, ...link }`; `{ subscriptionId }`                                        | Subscription mirror.                                          |
 | `subscriptions.cancel`, `subscriptions.pause`, `subscriptions.resume`                    | `{ subscriptionId, cancelAtCycleEnd? }`; `{ subscriptionId }`; `{ subscriptionId }`                                                                               | Subscription mirror.                                          |
 | `subscriptions.update`                                                                   | `{ subscriptionId, planId?, offerId?, quantity?, remainingCount?, startAt?, scheduleChangeAt?, customerNotify? }`                                                 | Subscription mirror.                                          |
-| `subscriptions.getForUser`, `subscriptions.listByUser`                                   | `{ userId }`; `{ userId, limit? }`                                                                                                                                | Subscription mirror/`null` or a bounded list.                 |
+| `subscriptions.getForUser`, `subscriptions.listByUser`                                   | `{ userId, statuses? }`; `{ userId, limit? }`                                                                                                                     | Subscription mirror/`null` or a bounded list.                 |
 | `verification.checkout`, `verification.subscriptionCheckout`, `verification.paymentLink` | `{ orderId, paymentId, signature, userId? }`; `{ subscriptionId, paymentId, signature, userId? }`; `{ paymentLinkId, referenceId, status, paymentId, signature }` | Verified payment mirror or `true` for payment link.           |
 | `webhooks.cleanup`, `idempotency.release`                                                | `{ before?, batchSize? }`; `{ resource: "order" \| "plan" \| "subscription", key }`                                                                               | Deleted count or release boolean.                             |
 
 `link` means optional `{ userId?, externalId?, metadata?, idempotencyKey? }`. `checkoutOptions(order, options?)` is a standalone pure export that returns Checkout.js options for an `orders.create` result. Mirrored rows expose a `testMode` boolean. `registerRoutes(http, component, { path?, onEvent? })` is also exported, with `client.registerRoutes(http, options?)` as a shortcut that carries the client's callback.
 
-The provider list methods accept `{ count?, skip? }`; local list methods use indexed bounded reads. `webhooks.ingest` is the component action behind `registerRoutes`; it accepts `{ body, signature, eventId, callbackHandle? }` and returns `processed`, `duplicate`, `ignored`, or `failed` with an optional safe `errorCode`. App code should use the route so the exact raw body is verified.
+Provider lists default to `count: 10, skip: 0`; `count` must be an integer from 1 to 100 and `skip` from 0 to 900. Local lists default to `limit: 50` and require an integer from 1 to 100. `subscriptions.getForUser` accepts at most 20 statuses. It prefers active, authenticated, pending, halted, then paused among allowed statuses, choosing the newest mirror in the first matching status. Otherwise it selects the newest matching mirror; without a filter, it selects the newest mirror of any status.
+
+Notes and metadata each allow at most 15 entries, with nonempty keys of up to 256 UTF-16 code units and values of up to 256 code units; their merged provider notes also allow at most 15 entries. `userId` and `externalId` require 1–256 code units. These fields must contain no unpaired surrogate. Caller notes and metadata cannot use any key starting with `operatornest`, case-insensitively. The component writes `operatornestUserId`, `operatornestExternalId` and `operatornestIdempotencyKey`. Provider notes never assign mirror ownership: `userId` and `externalId` come from explicit app arguments, stored linkage or a recorded parent (payment from order, refund from payment). Plan names require 1–256 code units and optional descriptions 1–4096.
+
+Keyed creates reject changed requests. Customer `getOrCreate` returns or refreshes a keyed mirror only when its `userId` equals the argument exactly, including omission; any other owner or an unowned mirror requested with a user ID returns `RAZORPAY_CUSTOMER_CONFLICT`. Omitted contact is preserved. Unkeyed synthetic creates receive independent IDs. Synthetic orders reject duplicate receipts; live duplicate-receipt recovery requires the provider order’s `operatornestIdempotencyKey` to equal the claim key and all request fields to match. Order, plan and subscription claims and their request fingerprints include `testMode`, so the same key can be used independently in both modes. Completed claims remain reserved; a concurrent or ambiguous create returns `RAZORPAY_IDEMPOTENCY_PENDING`. Reuse the same key to reconcile after ten minutes; an unresolved claim returns `RAZORPAY_IDEMPOTENCY_PENDING` and never sends another POST. `idempotency.release` releases a pending or failed claim in the client’s selected mode only after your app has resolved its provider outcome.
+
+`webhooks.ingest` is the component action behind `registerRoutes`; it accepts `{ body, signature, eventId, callbackHandle? }` and returns `processed`, `duplicate`, `ignored`, or `failed` with an optional safe `errorCode`. App code should use the route so the exact raw body is verified.
 
 ## Error codes
 
-Component errors are `ConvexError` instances with `{ code, message, retryable? }` data. `isRazorpayError(error)` narrows them; `RazorpayErrorCode` is the exported code union. The message is sanitized and never includes credentials.
+Component errors contain `{ code, message }`; provider failures may also contain `providerStatus` (HTTP status) and `providerCode` (at most 64 UTF-16 code units). Messages are fixed per code. Provider descriptions, fields and response bodies never enter error data. `isRazorpayError` validates the complete shape; `RazorpayErrorCode` is the exported union. No `retryable` flag is returned. For an uncertain create outcome, reuse its key and reconcile before issuing another create.
 
-| Code                                                                                                  | Meaning                                                                                                                                                           |
-| ----------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `RAZORPAY_INVALID_ARGUMENT`                                                                           | Input failed local validation.                                                                                                                                    |
-| `RAZORPAY_NOT_CONFIGURED`                                                                             | Required API credentials are missing.                                                                                                                             |
-| `RAZORPAY_LIVE_KEY_TEST_MODE`                                                                         | Explicit test mode was requested with a live key id.                                                                                                              |
-| `RAZORPAY_MODE_MISMATCH`                                                                              | A cached create is reused in a different mode, or a test-mode operation targets a live row.                                                                       |
-| `RAZORPAY_IDEMPOTENCY_REQUIRED`, `RAZORPAY_IDEMPOTENCY_CONFLICT`, `RAZORPAY_IDEMPOTENCY_PENDING`      | A required key is missing; a key was reused with a different request on any create path; or a same-key create is in flight or ambiguous and needs reconciliation. |
-| `RAZORPAY_CUSTOMER_CONFLICT`                                                                          | A provider customer belongs to another app user.                                                                                                                  |
-| `RAZORPAY_NOT_FOUND`                                                                                  | A required mirrored entity (test-mode fetch, checkout order, subscription, or payment, claim mirror) is absent.                                                   |
-| `RAZORPAY_INVALID_RESPONSE`, `RAZORPAY_INVALID_ENTITY`                                                | Provider data failed validation.                                                                                                                                  |
-| `RAZORPAY_INVALID_WEBHOOK_SIGNATURE`, `RAZORPAY_MALFORMED_WEBHOOK`, `RAZORPAY_WEBHOOK_SECRET_MISSING` | Webhook authentication, encoding/envelope, or configuration failed.                                                                                               |
-| `RAZORPAY_NETWORK_ERROR`, `RAZORPAY_HTTP_ERROR`, `RAZORPAY_PROVIDER_REJECTED`                         | Provider transport or rejection; inspect `retryable` before retrying.                                                                                             |
+| Code                                 | Fixed message                                                         |
+| ------------------------------------ | --------------------------------------------------------------------- |
+| `RAZORPAY_INVALID_ARGUMENT`          | An argument is invalid, missing or out of bounds.                     |
+| `RAZORPAY_INVALID_RESPONSE`          | The provider response is invalid or a required mirror is missing.     |
+| `RAZORPAY_NOT_CONFIGURED`            | Razorpay API credentials are missing.                                 |
+| `RAZORPAY_LIVE_KEY_TEST_MODE`        | Test mode cannot use a live Razorpay key.                             |
+| `RAZORPAY_MODE_MISMATCH`             | The operation and mirror have different modes.                        |
+| `RAZORPAY_CUSTOMER_CONFLICT`         | The customer belongs to another app user.                             |
+| `RAZORPAY_IDEMPOTENCY_REQUIRED`      | Refund creation requires an idempotency key or receipt.               |
+| `RAZORPAY_IDEMPOTENCY_CONFLICT`      | The idempotency key or receipt identifies a different create request. |
+| `RAZORPAY_IDEMPOTENCY_PENDING`       | The create outcome is pending or unknown; reconcile before retrying.  |
+| `RAZORPAY_NOT_FOUND`                 | The required mirror does not exist.                                   |
+| `RAZORPAY_PROVIDER_REJECTED`         | Razorpay rejected the request.                                        |
+| `RAZORPAY_HTTP_ERROR`                | Razorpay returned an HTTP failure with an uncertain outcome.          |
+| `RAZORPAY_NETWORK_ERROR`             | The Razorpay network request failed with an uncertain outcome.        |
+| `RAZORPAY_WEBHOOK_SECRET_MISSING`    | The webhook signing secret is missing.                                |
+| `RAZORPAY_INVALID_WEBHOOK_SIGNATURE` | The webhook signature is invalid.                                     |
+| `RAZORPAY_MALFORMED_WEBHOOK`         | The webhook body or envelope is invalid or exceeds the size limit.    |
+| `RAZORPAY_INVALID_ENTITY`            | The webhook entities or their relationships are invalid.              |
 
 ## Testing
 
@@ -226,23 +235,29 @@ const t = convexTest(schema, import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]))
 register(t);
 ```
 
-Client `testMode: true` or component `RAZORPAY_TEST_MODE=true` enables deterministic local entities; an explicit client `testMode: false` overrides the env variable. Key prefixes never select the mode, and `rzp_live_` keys are refused in test mode. Every mirrored row carries `testMode`; signed webhook entities are live unless `RAZORPAY_TEST_MODE=true`, and test-mode operations refuse live rows with `RAZORPAY_MODE_MISMATCH`. Stub provider `fetch` and component env with fabricated values in tests. Test mode still verifies webhook and checkout signatures when those paths require them. Run `pnpm test` for coverage thresholds and `pnpm smoke` for the real local Convex runtime.
+Synthetic operations make no provider calls and do not create provider resources. Key prefixes do not select the mode; `rzp_live_` keys are rejected when synthetic mode is enabled, including during webhook ingest. Mirrors store `testMode`; writes reject an existing mirror of the opposite mode, and local reads select only the requested mode. Webhook mode follows `RAZORPAY_TEST_MODE`. Test mode still requires secrets for webhook and Checkout signature verification. Stub `fetch` and env values with fabricated data in tests.
 
-## Data retention
+## Limits and retention
 
-The daily cron removes webhook deduplication records and completed or failed idempotency claims older than 30 days in batches. Entity mirrors and unresolved claims have no automatic age cutoff; the consuming app must define reconciliation and erasure workflows. Provider `raw` passthrough fields may contain personal data; webhook raw bodies are not stored. See [ADR 0003](docs/adr/0003-financial-mirror-retention.md).
+Reconciliation scans at most 20 provider pages of 100 records (2000 records). A scan without a matching component key leaves the claim pending, including when a shorter page ends the scan; it cannot establish the original POST outcome. Resolve that outcome before releasing the claim.
+
+Subscription fetches always apply the provider’s current state. Webhooks order only against other webhook `created_at` values stored as `lastWebhookCreatedAtProvider`; they also enforce subscription status transitions and nondecreasing paid counts. Local observation timestamps never order webhook events.
+
+The daily cron removes webhook deduplication records and failed idempotency claims older than 30 days in batches. Entity mirrors and completed or pending claims have no automatic age cutoff; the consuming app must define reconciliation and erasure workflows. Provider `raw` passthrough fields may contain personal data; webhook raw bodies are not stored. See [ADR 0003](https://github.com/OperatorNest/convex-razorpay/blob/main/docs/adr/0003-financial-mirror-retention.md).
 
 ## Known limitations
 
-Razorpay live-provider and deployed-scheduler behavior need separate qualification. Payment links, invoices, disputes, settlements, payouts, and provider token management are outside v0.1. Orders, plans and subscriptions lack a confirmed provider idempotency header; ambiguous creates use a local claim and bounded reconciliation, and a concurrent same-key call receives `RAZORPAY_IDEMPOTENCY_PENDING`. Subscription payment-method eligibility and certain provider limits remain unconfirmed against provider accounts.
+Payment-link signature verification is supported; payment-link CRUD, invoice CRUD, disputes, settlements, payouts and provider token management are excluded. Provider capture settings, subscription payment-method eligibility and deployed scheduler execution require account-specific verification. The component does not automatically retry provider calls.
+
+Provider test-account observations: [redacted fixtures](https://github.com/OperatorNest/convex-razorpay/tree/main/tests/fixtures/e2e).
 
 ## Security
 
-The app must authenticate and authorize every call, own trusted prices, and gate fulfillment on confirmed payment state. The component verifies webhooks over the unchanged raw body using constant-time HMAC comparison and accepts a previous secret during rotation. Missing secrets fail closed. Report issues through [private vulnerability reporting](SECURITY.md).
+The app must authenticate and authorize every call, own trusted prices, and gate fulfillment on confirmed payment state. The component verifies webhooks over the unchanged raw body using constant-time HMAC comparison and accepts a previous secret during rotation. Missing secrets fail closed. Report issues through [private vulnerability reporting](https://github.com/OperatorNest/convex-razorpay/security/advisories/new).
 
-## Development
+## Contributing
 
-Use `.mise.toml` for Node 26 and pnpm 12.9.1. Run `mise trust && mise install`, `pnpm install --frozen-lockfile`, `CONVEX_AGENT_MODE=anonymous pnpm exec convex init`, and `pnpm build:codegen` for a fresh checkout. `pnpm check` runs formatting, build, type-aware lint, typecheck, Knip, and coverage. `pnpm smoke` starts an anonymous local backend with fabricated values. For authorized Razorpay test-dashboard verification, `.env.e2e.example` and `pnpm e2e:env` configure the local deployment; keep `.env.e2e` private.
+Setup, checks and maintainer verification are in [CONTRIBUTING.md](https://github.com/OperatorNest/convex-razorpay/blob/main/CONTRIBUTING.md).
 
 ## License
 

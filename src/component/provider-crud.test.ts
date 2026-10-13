@@ -178,7 +178,12 @@ test("live payment capture and refund mirror provider state without accepting an
     amount: 2000,
   });
   expect(
-    await t.query(internal.refunds.e2eRefund, { refundId: refunded.razorpayId }),
+    await t.run((ctx) =>
+      ctx.db
+        .query("refunds")
+        .withIndex("by_razorpayId", (q) => q.eq("razorpayId", refunded.razorpayId))
+        .unique(),
+    ),
   ).toMatchObject({
     _id: refunded._id,
     razorpayId: "rfnd_live_fixture",
@@ -210,7 +215,7 @@ test("live duplicate-receipt order is reconciled and its provider payments are m
     receipt: "rcpt_reconciled",
     status: "created",
     attempts: 0,
-    notes: {},
+    notes: { operatornestIdempotencyKey: "reconciled_order_key" },
     created_at: 1_567_674_500,
   };
   const payment = {
@@ -256,6 +261,7 @@ test("live duplicate-receipt order is reconciled and its provider payments are m
     amount: 5000,
     currency: "INR",
     receipt: "rcpt_reconciled",
+    idempotencyKey: "reconciled_order_key",
     testMode: false,
   });
   expect(created.order.razorpayId).toBe(order.id);

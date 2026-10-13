@@ -24,6 +24,6 @@ body:
     id: version
     attributes:
       label: Package version or documentation version
-      description: Include the version where you encountered the issue, if relevant.
+      description: Name the package version or repository commit.
     validations:
       required: true

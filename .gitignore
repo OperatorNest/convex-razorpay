@@ -7,3 +7,7 @@ coverage/
 *.tsbuildinfo
 *.tgz
 .env.e2e
+
+.agents/skills/convex*/
+skills-lock.json
+**/_generated/ai/

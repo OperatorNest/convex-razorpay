@@ -6,7 +6,7 @@ body:
     id: user_task
     attributes:
       label: User task
-      description: What are you trying to accomplish?
+      description: Describe the operation and required result.
     validations:
       required: true
   - type: textarea
@@ -25,13 +25,13 @@ body:
     id: alternatives
     attributes:
       label: Alternatives considered
-      description: What workarounds or other approaches have you considered?
+      description: Describe existing workarounds.
     validations:
       required: true
   - type: textarea
     id: compatibility
     attributes:
       label: Compatibility impact
-      description: Describe effects on existing APIs, data, or behavior. Write “unknown” if unsure.
+      description: Describe incompatible API, data or behavior changes; write “unknown” if unverified.
     validations:
       required: true

@@ -19,8 +19,7 @@ const linkage = {
   requestFingerprint: schema.tables.refunds.validator.fields.requestFingerprint,
   createdThroughComponent: schema.tables.orders.validator.fields.createdThroughComponent,
 };
-// Provider fetches are live data, so an absent testMode means live. Test-mode writers and
-// signed webhooks always pass the mode they observed.
+
 const writeArgs = { raw: v.any(), observedAt: v.number(), ...linkage };
 
 export const putOrder = internalMutation({
@@ -60,12 +59,9 @@ export const putTestRefund = internalMutation({
         .withIndex("by_idempotencyKey", (q) => q.eq("idempotencyKey", args.idempotencyKey))
         .first();
       if (existing) {
-        assertModeMatches(existing, true, "refund");
+        assertModeMatches(existing, true);
         if (existing.requestFingerprint !== args.requestFingerprint)
-          throw razorpayError(
-            "RAZORPAY_IDEMPOTENCY_CONFLICT",
-            "Idempotency key reused with different refund request",
-          );
+          throw razorpayError("RAZORPAY_IDEMPOTENCY_CONFLICT");
         return existing;
       }
     }
@@ -73,18 +69,17 @@ export const putTestRefund = internalMutation({
       .query("payments")
       .withIndex("by_razorpayId", (q) => q.eq("razorpayId", args.paymentId))
       .first();
-    if (!payment) throw razorpayError("RAZORPAY_NOT_FOUND", "Payment not found in test mode");
-    // A fake refund must never raise amountRefunded on a live-mirrored payment.
-    assertModeMatches(payment, true, "payment");
-    if (!payment.captured)
-      throw razorpayError("RAZORPAY_INVALID_ARGUMENT", "Only captured payments can be refunded");
+    if (!payment) throw razorpayError("RAZORPAY_NOT_FOUND");
+
+    assertModeMatches(payment, true);
+    if (!payment.captured) throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     const amount = args.amount ?? payment.amount - payment.amountRefunded;
     if (
       !Number.isSafeInteger(amount) ||
       amount < 1 ||
       amount > payment.amount - payment.amountRefunded
     ) {
-      throw razorpayError("RAZORPAY_INVALID_ARGUMENT", "Refund exceeds captured amount");
+      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     }
     const now = Date.now();
     const raw = {
@@ -151,38 +146,37 @@ export const markVerified = internalMutation({
       .query("payments")
       .withIndex("by_razorpayId", (q) => q.eq("razorpayId", args.paymentId))
       .first();
-    if (!payment) throw razorpayError("RAZORPAY_NOT_FOUND", "Checkout payment not found");
-    // Test-mode checkout may only verify test rows, and live checkout only live rows.
-    assertModeMatches(payment, args.testMode, "payment");
+    if (!payment) throw razorpayError("RAZORPAY_NOT_FOUND");
+
+    assertModeMatches(payment, args.testMode);
     if (
       (args.orderId && payment.orderId !== args.orderId) ||
       (args.subscriptionId &&
         payment.subscriptionId &&
         payment.subscriptionId !== args.subscriptionId)
     ) {
-      throw razorpayError("RAZORPAY_INVALID_ARGUMENT", "Checkout payment identity mismatch");
+      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     }
     if (payment.status !== "authorized" && payment.status !== "captured") {
-      throw razorpayError(
-        "RAZORPAY_INVALID_ARGUMENT",
-        "Checkout payment is not authorized or captured",
-      );
+      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     }
     await ctx.db.patch("payments", payment["_id"], {
       verified: true,
       subscriptionId: args.subscriptionId ?? payment.subscriptionId,
     });
-    return getOrThrow(await ctx.db.get("payments", payment["_id"]), "Updated payment is missing");
+    return getOrThrow(await ctx.db.get("payments", payment["_id"]));
   },
 });
 
 export const orderByKey = internalQuery({
-  args: { key: v.string() },
+  args: { key: v.string(), testMode: v.boolean() },
   returns: v.union(schema.doc("orders"), v.null()),
-  handler: (ctx, { key }) =>
+  handler: (ctx, { key, testMode }) =>
     ctx.db
       .query("orders")
-      .withIndex("by_idempotencyKey", (q) => q.eq("idempotencyKey", key))
+      .withIndex("by_idempotencyKey_and_testMode", (q) =>
+        q.eq("idempotencyKey", key).eq("testMode", testMode),
+      )
       .first(),
 });
 export const refundByKey = internalQuery({
@@ -204,29 +198,33 @@ export const customerByKey = internalQuery({
       .first(),
 });
 export const customerByUser = internalQuery({
-  args: { userId: v.string() },
+  args: { userId: v.string(), testMode: v.boolean() },
   returns: v.union(schema.doc("customers"), v.null()),
-  handler: (ctx, { userId }) =>
+  handler: (ctx, { userId, testMode }) =>
     ctx.db
       .query("customers")
-      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .withIndex("by_testMode_and_userId", (q) => q.eq("testMode", testMode).eq("userId", userId))
       .first(),
 });
 export const planByKey = internalQuery({
-  args: { key: v.string() },
+  args: { key: v.string(), testMode: v.boolean() },
   returns: v.union(schema.doc("plans"), v.null()),
-  handler: (ctx, { key }) =>
+  handler: (ctx, { key, testMode }) =>
     ctx.db
       .query("plans")
-      .withIndex("by_idempotencyKey", (q) => q.eq("idempotencyKey", key))
+      .withIndex("by_idempotencyKey_and_testMode", (q) =>
+        q.eq("idempotencyKey", key).eq("testMode", testMode),
+      )
       .first(),
 });
 export const subscriptionByKey = internalQuery({
-  args: { key: v.string() },
+  args: { key: v.string(), testMode: v.boolean() },
   returns: v.union(schema.doc("subscriptions"), v.null()),
-  handler: (ctx, { key }) =>
+  handler: (ctx, { key, testMode }) =>
     ctx.db
       .query("subscriptions")
-      .withIndex("by_idempotencyKey", (q) => q.eq("idempotencyKey", key))
+      .withIndex("by_idempotencyKey_and_testMode", (q) =>
+        q.eq("idempotencyKey", key).eq("testMode", testMode),
+      )
       .first(),
 });

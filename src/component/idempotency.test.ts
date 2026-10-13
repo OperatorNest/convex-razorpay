@@ -147,32 +147,18 @@ test("definitive plan 4xx releases the key for an identical retry", async () => 
   expect(fetch).toHaveBeenCalledTimes(2);
 });
 
-test("plan idempotency note cannot be overwritten by caller metadata", async () => {
-  const fetch = vi.fn(async (_url: string, init: RequestInit) => {
-    if (typeof init.body !== "string") throw new Error("Expected a serialized provider request");
-    expect(init.body).toContain(`"operatornestIdempotencyKey":"${planArgs.idempotencyKey}"`);
-    return new Response(
-      JSON.stringify({
-        entity: "plan",
-        id: "plan_reserved_note",
-        period: "monthly",
-        interval: 1,
-        item: { name: "Pro", amount: 69900, currency: "INR" },
-        notes: { operatornestIdempotencyKey: planArgs.idempotencyKey },
-        created_at: 1567674599,
-      }),
-      { status: 200 },
-    );
-  });
+test("caller metadata cannot set the reserved idempotency note", async () => {
+  const fetch = vi.fn();
   vi.stubGlobal("fetch", fetch);
   const t = convexTest(schema, modules);
   register(t);
-  const result = await t.action(components.razorpay.plans.create, {
-    ...planArgs,
-    metadata: { operatornestIdempotencyKey: "caller-overwrite" },
-  });
-  expect(result.razorpayId).toBe("plan_reserved_note");
-  expect(fetch).toHaveBeenCalledTimes(1);
+  await expect(
+    t.action(components.razorpay.plans.create, {
+      ...planArgs,
+      metadata: { operatornestIdempotencyKey: "caller-overwrite" },
+    }),
+  ).rejects.toMatchObject({ data: { code: "RAZORPAY_INVALID_ARGUMENT" } });
+  expect(fetch).not.toHaveBeenCalled();
 });
 
 test.each([409, 429])(
@@ -234,7 +220,7 @@ test("stale plan claim reconciles note key before posting and tolerates unrelate
   expect(fetch).toHaveBeenCalledTimes(2);
 });
 
-test("stale plan lookup posts only after a complete provider scan finds no match", async () => {
+test("stale plan lookup remains pending when the provider scan finds no match", async () => {
   vi.useFakeTimers();
   const fetch = vi
     .fn()
@@ -265,9 +251,10 @@ test("stale plan lookup posts only after a complete provider scan finds no match
   register(t);
   await expect(t.action(components.razorpay.plans.create, planArgs)).rejects.toThrow();
   vi.setSystemTime(Date.now() + 11 * 60_000);
-  const created = await t.action(components.razorpay.plans.create, planArgs);
-  expect(created.razorpayId).toBe("plan_after_absence");
-  expect(fetch).toHaveBeenCalledTimes(3);
+  await expect(t.action(components.razorpay.plans.create, planArgs)).rejects.toMatchObject({
+    data: { code: "RAZORPAY_IDEMPOTENCY_PENDING" },
+  });
+  expect(fetch).toHaveBeenCalledTimes(2);
 });
 
 test("a full bounded plan reconciliation scan never assumes absence or reposts", async () => {
@@ -290,7 +277,7 @@ test("a full bounded plan reconciliation scan never assumes absence or reposts",
   await expect(t.action(components.razorpay.plans.create, planArgs)).rejects.toThrow();
   vi.setSystemTime(Date.now() + 11 * 60_000);
   await expect(t.action(components.razorpay.plans.create, planArgs)).rejects.toThrow(
-    /Could not exhaust bounded plan lookup/i,
+    "The create outcome is pending or unknown; reconcile before retrying.",
   );
   expect(fetch).toHaveBeenCalledTimes(21);
 });
@@ -422,7 +409,7 @@ test("refund creation derives its provider key from receipt and rejects keyless 
   expect(fetch).toHaveBeenCalledTimes(1);
 });
 
-test("test-mode cached creates reject reuse after switching to live mode", async () => {
+test("mode changes isolate claims while customer and refund mirrors reject opposite mode", async () => {
   const fetch = vi.fn(async () => {
     throw new Error("Unexpected provider POST on a mode mismatch");
   });
@@ -430,7 +417,7 @@ test("test-mode cached creates reject reuse after switching to live mode", async
   const t = convexTest(schema, modules);
   register(t);
   vi.stubEnv("RAZORPAY_WEBHOOK_SECRET", "whsec_mode_fixture");
-  // Webhook entities are tagged test only when the deployment runs in test mode.
+
   vi.stubEnv("RAZORPAY_TEST_MODE", "true");
   const paymentEvent = JSON.stringify({
     entity: "event",
@@ -537,11 +524,13 @@ test("test-mode cached creates reject reuse after switching to live mode", async
   ];
   await Promise.all(cases.map(({ create }) => create()));
   await Promise.all(
-    cases.map(({ retry }) =>
-      expect(retry()).rejects.toMatchObject({ data: { code: "RAZORPAY_MODE_MISMATCH" } }),
+    cases.map(({ retry }, index) =>
+      expect(retry()).rejects.toMatchObject({
+        data: { code: index < 3 ? "RAZORPAY_NETWORK_ERROR" : "RAZORPAY_MODE_MISMATCH" },
+      }),
     ),
   );
-  expect(fetch).not.toHaveBeenCalled();
+  expect(fetch).toHaveBeenCalledTimes(3);
 });
 
 test("a configured secret without a key id fails as not configured", async () => {

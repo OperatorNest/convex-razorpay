@@ -1,6 +1,6 @@
 import { razorpayError } from "../shared/errors.js";
 import { v } from "convex/values";
-import { action, internalQuery } from "./_generated/server.js";
+import { action } from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
 import schema from "./schema.js";
 import type { Doc } from "./_generated/dataModel.js";
@@ -16,17 +16,6 @@ import {
 } from "./validators.js";
 import { optionalLinkage } from "./validators.js";
 
-/** Internal mirror read for maintainer end-to-end testing. */
-export const e2eRefund = internalQuery({
-  args: { refundId: v.string() },
-  returns: v.union(schema.doc("refunds"), v.null()),
-  handler: (ctx, { refundId }) =>
-    ctx.db
-      .query("refunds")
-      .withIndex("by_razorpayId", (q) => q.eq("razorpayId", refundId))
-      .unique(),
-});
-
 export const create = action({
   args: {
     paymentId: v.string(),
@@ -40,14 +29,11 @@ export const create = action({
   handler: async (ctx, args): Promise<Doc<"refunds">> => {
     const testMode = isTestMode(args.testMode);
     if (args.amount !== undefined) validateAmount(args.amount);
-    validateReceipt(args.receipt, "refund");
+    validateReceipt(args.receipt);
     const idempotencyKey =
       args.idempotencyKey ?? (args.receipt ? `receipt:${args.receipt}` : undefined);
     if (!idempotencyKey) {
-      throw razorpayError(
-        "RAZORPAY_IDEMPOTENCY_REQUIRED",
-        "Refund creation requires an idempotency key or receipt",
-      );
+      throw razorpayError("RAZORPAY_IDEMPOTENCY_REQUIRED");
     }
     validateIdempotencyKey(args.idempotencyKey);
     const notes = linkedNotes(args.notes, args.userId, args.externalId, args.metadata);
@@ -60,12 +46,9 @@ export const create = action({
     ]);
     const existing = await ctx.runQuery(internal.mutations.refundByKey, { key: idempotencyKey });
     if (existing) {
-      assertModeMatches(existing, testMode, "refund");
+      assertModeMatches(existing, testMode);
       if (existing.requestFingerprint !== fingerprint)
-        throw razorpayError(
-          "RAZORPAY_IDEMPOTENCY_CONFLICT",
-          "Idempotency key reused with different refund request",
-        );
+        throw razorpayError("RAZORPAY_IDEMPOTENCY_CONFLICT");
       return existing;
     }
     if (testMode) {
@@ -97,8 +80,7 @@ export const create = action({
         idempotencyKey: providerIdempotencyKey,
       },
     );
-    if (record(raw).payment_id !== args.paymentId)
-      throw razorpayError("RAZORPAY_INVALID_ARGUMENT", "Razorpay refund payment mismatch");
+    if (record(raw).payment_id !== args.paymentId) throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     return ctx.runMutation(internal.mutations.putRefund, {
       raw,
       observedAt: Date.now(),
@@ -118,15 +100,14 @@ export const fetch = action({
   handler: async (ctx, { refundId, testMode }): Promise<Doc<"refunds">> => {
     if (isTestMode(testMode)) {
       const local = await ctx.runQuery(internal.lookup.refund, { id: refundId });
-      if (!local) throw razorpayError("RAZORPAY_NOT_FOUND", "Refund not found in test mode");
-      assertModeMatches(local, true, "refund");
+      if (!local) throw razorpayError("RAZORPAY_NOT_FOUND");
+      assertModeMatches(local, true);
       return local;
     }
     const raw = await requestProvider("GET", `/refunds/${encodeURIComponent(refundId)}`, {
       idempotent: true,
     });
-    if (record(raw).id !== refundId)
-      throw razorpayError("RAZORPAY_INVALID_ARGUMENT", "Razorpay refund id mismatch");
+    if (record(raw).id !== refundId) throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     return ctx.runMutation(internal.mutations.putRefund, { raw, observedAt: Date.now() });
   },
 });

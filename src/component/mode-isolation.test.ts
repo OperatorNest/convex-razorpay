@@ -133,8 +133,8 @@ test("a fake refund can never raise amountRefunded on a live-mirrored payment", 
     status: "captured",
     testMode: false,
   });
-  expect(await t.run((ctx) => ctx.db.query("refunds").collect())).toHaveLength(1);
-  // The mutation guard holds even if the action's checks were bypassed.
+  expect(await t.run((ctx) => ctx.db.query("refunds").take(1000))).toHaveLength(1);
+
   await mismatch(
     t.mutation(internal.mutations.putTestRefund, {
       refundId: "rfnd_test_forced",
@@ -159,7 +159,9 @@ test("a test-mode capture, fetch or list never reads or rewrites live rows", asy
   const t = convexTest(schema, modules);
   await mirrorLiveRows(t);
   await mismatch(t.action(api.orders.fetch, { orderId: "order_mirror", testMode: true }));
-  await mismatch(t.action(api.orders.fetchPayments, { orderId: "order_mirror", testMode: true }));
+  expect(
+    await t.action(api.orders.fetchPayments, { orderId: "order_mirror", testMode: true }),
+  ).toEqual([]);
   await mismatch(t.action(api.payments.fetch, { paymentId: "pay_live", testMode: true }));
   await mismatch(
     t.action(api.payments.capture, {
@@ -194,7 +196,7 @@ test("a test-mode capture, fetch or list never reads or rewrites live rows", asy
   expect(await t.run((ctx) => ctx.db.query("customers").first())).toMatchObject({
     name: "Mirror",
   });
-  // Mode-scoped listings: live rows never appear in test mode.
+
   expect(await t.action(api.payments.list, { testMode: true })).toEqual([]);
   expect(await t.action(api.plans.list, { testMode: true })).toEqual([]);
   await t.mutation(internal.mutations.putPayment, {
@@ -278,9 +280,9 @@ test("a completed claim whose mirror vanished is RAZORPAY_NOT_FOUND", async () =
   ];
   for (const { table, create } of cases) {
     await create();
-    // Remove the mirror but keep the completed claim.
+
     await t.run(async (ctx) => {
-      for (const row of await ctx.db.query(table).collect()) await ctx.db.delete(table, row._id);
+      for (const row of await ctx.db.query(table).take(1000)) await ctx.db.delete(table, row._id);
     });
     await notFound(create());
   }
@@ -388,7 +390,7 @@ test("webhook rows are live unless the deployment runs in test mode", async () =
   await ingestAll(t, "test");
   const tags = async (table: "orders" | "payments" | "refunds" | "subscriptions") =>
     Object.fromEntries(
-      (await t.run((ctx) => ctx.db.query(table).collect())).map((row) => [
+      (await t.run((ctx) => ctx.db.query(table).take(1000))).map((row) => [
         row.razorpayId,
         row.testMode,
       ]),
@@ -427,7 +429,6 @@ test("testMode is tri-state: explicit false overrides RAZORPAY_TEST_MODE, undefi
   const fetch = vi.fn(async () => Response.json(providerOrder));
   vi.stubGlobal("fetch", fetch);
 
-  // Env true: undefined and true use test mode; explicit false goes to the provider.
   vi.stubEnv("RAZORPAY_TEST_MODE", "true");
   expect((await t.action(api.orders.create, args)).order.testMode).toBe(true);
   expect((await t.action(api.orders.create, { ...args, testMode: true })).order.testMode).toBe(
@@ -440,14 +441,12 @@ test("testMode is tri-state: explicit false overrides RAZORPAY_TEST_MODE, undefi
   });
   expect(fetch).toHaveBeenCalledTimes(1);
 
-  // Env true without credentials: explicit false fails closed instead of silently faking.
   stubRazorpayEnv({ testMode: "true" });
   await expect(t.action(api.orders.create, { ...args, testMode: false })).rejects.toMatchObject({
     data: { code: "RAZORPAY_NOT_CONFIGURED" },
   });
   expect((await t.action(api.orders.create, args)).order.testMode).toBe(true);
 
-  // Env unset: explicit true enables test mode, undefined requires credentials.
   stubRazorpayEnv({});
   expect((await t.action(api.orders.create, { ...args, testMode: true })).order.testMode).toBe(
     true,
@@ -456,7 +455,6 @@ test("testMode is tri-state: explicit false overrides RAZORPAY_TEST_MODE, undefi
     data: { code: "RAZORPAY_NOT_CONFIGURED" },
   });
 
-  // A live key still refuses test mode however it was requested.
   stubRazorpayEnv({ keyId: "rzp_live_fixture", keySecret: "fake_secret", testMode: "true" });
   await expect(t.action(api.orders.create, args)).rejects.toMatchObject({
     data: { code: "RAZORPAY_LIVE_KEY_TEST_MODE" },
@@ -480,12 +478,18 @@ test("receipts are printable ASCII for orders and refunds", async () => {
         testMode: true,
       }),
     ).rejects.toMatchObject({
-      data: { code: "RAZORPAY_INVALID_ARGUMENT", message: "Invalid refund receipt" },
+      data: {
+        code: "RAZORPAY_INVALID_ARGUMENT",
+        message: "An argument is invalid, missing or out of bounds.",
+      },
     });
     await expect(
       t.action(api.orders.create, { amount: 5000, currency: "INR", receipt, testMode: true }),
     ).rejects.toMatchObject({
-      data: { code: "RAZORPAY_INVALID_ARGUMENT", message: "Invalid order receipt" },
+      data: {
+        code: "RAZORPAY_INVALID_ARGUMENT",
+        message: "An argument is invalid, missing or out of bounds.",
+      },
     });
   }
   expect(

@@ -76,11 +76,12 @@
     "test:watch": "vitest",
     "smoke": "node scripts/smoke.mjs",
     "test:coverage": "vitest run --coverage --coverage.reporter=text",
-    "check": "pnpm fmt:check && pnpm build && pnpm lint && pnpm typecheck && pnpm knip && pnpm test",
+    "check": "pnpm fmt:check && pnpm build && pnpm lint && pnpm typecheck && pnpm knip && pnpm check:source && pnpm test",
     "changeset": "changeset",
     "e2e:env": "node scripts/with-local-lock.mjs node scripts/e2e-env.mjs",
     "e2e": "node scripts/e2e.mjs",
-    "knip": "knip --no-progress"
+    "knip": "knip --no-progress",
+    "check:source": "node scripts/check-source.mjs"
   },
   "devDependencies": {
     "@changesets/cli": "3.0.3",
@@ -102,7 +103,7 @@
     "convex": "^1.46.0"
   },
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=24"
   },
   "packageManager": "pnpm@12.9.1"
 }

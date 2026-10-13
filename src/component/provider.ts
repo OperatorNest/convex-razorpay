@@ -1,59 +1,32 @@
-import { classifyProviderError, razorpayError, type RazorpayErrorData } from "../shared/errors.js";
+import { classifyProviderError, razorpayError } from "../shared/errors.js";
 import { env } from "./_generated/server.js";
 import { collectionItems } from "./mapping.js";
 import { isRecord } from "../shared/validation.js";
 
-/** The deployment-wide default: `RAZORPAY_TEST_MODE=true`. */
 export function envTestMode(): boolean {
   return env.RAZORPAY_TEST_MODE === "true";
 }
 
-/**
- * Resolves the mode of one call. An explicit client `testMode` (true or false) wins; when it is
- * undefined the component env decides. This is the only place the mode is resolved.
- */
-export function isTestMode(requested?: boolean): boolean {
+export function resolveMode(requested?: boolean): boolean {
   const enabled = requested ?? envTestMode();
   if (enabled && env.RAZORPAY_KEY_ID?.startsWith("rzp_live_")) {
-    throw razorpayError(
-      "RAZORPAY_LIVE_KEY_TEST_MODE",
-      "Test mode cannot be used with a live Razorpay key",
-    );
-  }
-  if (!enabled && (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET)) {
-    throw razorpayError("RAZORPAY_NOT_CONFIGURED", "Razorpay API credentials are not configured");
+    throw razorpayError("RAZORPAY_LIVE_KEY_TEST_MODE");
   }
   return enabled;
 }
 
-export function assertModeMatches(
-  row: { testMode: boolean },
-  testMode: boolean,
-  resource: string,
-): void {
+export function isTestMode(requested?: boolean): boolean {
+  const enabled = resolveMode(requested);
+  if (!enabled && (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET)) {
+    throw razorpayError("RAZORPAY_NOT_CONFIGURED");
+  }
+  return enabled;
+}
+
+export function assertModeMatches(row: { testMode: boolean }, testMode: boolean): void {
   if (row.testMode !== testMode) {
-    throw razorpayError(
-      "RAZORPAY_MODE_MISMATCH",
-      `The cached ${resource} was created in a different Razorpay mode`,
-    );
+    throw razorpayError("RAZORPAY_MODE_MISMATCH");
   }
-}
-
-function redact(value: string): string {
-  let clean = value;
-  for (const credential of [
-    env.RAZORPAY_KEY_ID,
-    env.RAZORPAY_KEY_SECRET,
-    env.RAZORPAY_WEBHOOK_SECRET,
-    env.RAZORPAY_WEBHOOK_SECRET_PREVIOUS,
-  ]) {
-    if (credential) clean = clean.replaceAll(credential, "[redacted]");
-  }
-  return clean;
-}
-
-function sanitized(error: RazorpayErrorData): RazorpayErrorData {
-  return { ...error, message: redact(error.message) };
 }
 
 export async function requestProvider(
@@ -62,7 +35,7 @@ export async function requestProvider(
   options: { body?: unknown; idempotent?: boolean; refund?: boolean; idempotencyKey?: string } = {},
 ): Promise<unknown> {
   if (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET) {
-    throw razorpayError("RAZORPAY_NOT_CONFIGURED", "Razorpay API credentials are not configured");
+    throw razorpayError("RAZORPAY_NOT_CONFIGURED");
   }
   const headers: Record<string, string> = {
     Authorization: `Basic ${btoa(`${env.RAZORPAY_KEY_ID}:${env.RAZORPAY_KEY_SECRET}`)}`,
@@ -81,29 +54,22 @@ export async function requestProvider(
     try {
       response = await fetch(`https://api.razorpay.com/v1${path}`, init);
     } catch {
-      throw razorpayError(
-        "RAZORPAY_NETWORK_ERROR",
-        "Razorpay network request failed",
-        !!options.idempotent,
-      );
+      throw razorpayError("RAZORPAY_NETWORK_ERROR");
     }
     try {
       body = await response.json();
     } catch {
-      throw razorpayError(
-        "RAZORPAY_INVALID_RESPONSE",
-        "Razorpay returned invalid JSON",
-        !!options.idempotent && response.status >= 500,
-      );
+      throw razorpayError("RAZORPAY_INVALID_RESPONSE");
     }
   } finally {
     clearTimeout(timeout);
   }
   if (!response.ok) {
-    const error = sanitized(
-      classifyProviderError(response.status, body, !!options.idempotent, options.refund),
-    );
-    throw razorpayError(error.code, error.message, error.retryable);
+    const error = classifyProviderError(response.status, body);
+    throw razorpayError(error.code, {
+      providerStatus: response.status,
+      ...(error.providerCode === undefined ? {} : { providerCode: error.providerCode }),
+    });
   }
   return body;
 }
@@ -119,7 +85,7 @@ export async function findByIdempotencyKey(
   resource: "order" | "plan" | "subscription",
   key: string,
   receipt?: string,
-): Promise<Record<string, unknown> | null> {
+): Promise<Record<string, unknown>> {
   const pageSize = 100;
   const path = resource === "order" ? "/orders" : resource === "plan" ? "/plans" : "/subscriptions";
   const filter = resource === "order" && receipt ? `&receipt=${encodeURIComponent(receipt)}` : "";
@@ -135,10 +101,7 @@ export async function findByIdempotencyKey(
         isRecord(item) && isRecord(item.notes) && item.notes.operatornestIdempotencyKey === key,
     );
     if (found) return found;
-    if (items.length < pageSize) return null;
+    if (items.length < pageSize) break;
   }
-  throw razorpayError(
-    "RAZORPAY_INVALID_RESPONSE",
-    `Could not exhaust bounded ${resource} lookup while reconciling an idempotency key`,
-  );
+  throw razorpayError("RAZORPAY_IDEMPOTENCY_PENDING");
 }

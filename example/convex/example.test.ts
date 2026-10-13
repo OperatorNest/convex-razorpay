@@ -22,7 +22,9 @@ afterEach(() => {
   restoreRazorpayTestState();
 });
 
-test("getForUser prefers a e2e subscription over a newer abandoned checkout", async () => {
+test("getForUser prefers an active subscription over a newer abandoned checkout", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(1_567_674_500_000);
   const t = convexTest(schema, modules);
   register(t);
   const active = await t.action(components.razorpay.subscriptions.create, {
@@ -32,6 +34,7 @@ test("getForUser prefers a e2e subscription over a newer abandoned checkout", as
     idempotencyKey: "active_subscription_key",
     testMode: true,
   });
+  vi.setSystemTime(1_567_674_501_000);
   vi.stubEnv("RAZORPAY_WEBHOOK_SECRET", "whsec_subscription_priority");
   const envelope = JSON.stringify({
     entity: "event",
@@ -59,6 +62,7 @@ test("getForUser prefers a e2e subscription over a newer abandoned checkout", as
     signature: await hmacSha256Hex("whsec_subscription_priority", envelope),
     eventId: "evt_subscription_priority",
   });
+  vi.setSystemTime(1_567_674_502_000);
   const abandoned = await t.action(components.razorpay.subscriptions.create, {
     planId: "plan_fixture",
     totalCount: 12,
@@ -84,7 +88,7 @@ test("getForUser prefers a e2e subscription over a newer abandoned checkout", as
       userId: "user_returning",
       statuses: Array.from({ length: 21 }, (_, index) => `status_${index}`),
     }),
-  ).rejects.toThrow("Too many subscription statuses");
+  ).rejects.toThrow("An argument is invalid, missing or out of bounds.");
 });
 
 test("getOrCreate refreshes a user's customer profile and keeps omitted contact", async () => {
@@ -234,9 +238,9 @@ test("authenticated app creates and reads a deterministic local order", async ()
 test("app rejects unauthenticated order creation and reads", async () => {
   const t = convexTest(schema, modules);
   register(t);
-  // App-level codes never reuse the component's RAZORPAY_ namespace.
+
   await expect(t.action(api.example.createOrder, { cartId: "cart-one" })).rejects.toMatchObject({
-    data: { code: "APP_AUTH_REQUIRED", message: "Authentication required" },
+    data: { code: "APP_AUTH_REQUIRED", message: "Authentication is required." },
   });
   await expect(
     t.query(api.example.getOrder, { orderId: "order_test_missing" }),

@@ -1,6 +1,8 @@
+import { boundedLimit } from "../shared/validation.js";
 import { v } from "convex/values";
 import { internalQuery } from "./_generated/server.js";
 import schema from "./schema.js";
+import { validatePage } from "./validators.js";
 
 export const order = internalQuery({
   args: { id: v.string() },
@@ -57,44 +59,50 @@ export const subscription = internalQuery({
       .unique(),
 });
 export const paymentsForOrder = internalQuery({
-  args: { orderId: v.string(), limit: v.number() },
+  args: { orderId: v.string(), limit: v.number(), testMode: v.boolean() },
   returns: v.array(schema.doc("payments")),
-  handler: (ctx, { orderId, limit }) =>
+  handler: (ctx, { orderId, limit, testMode }) =>
     ctx.db
       .query("payments")
-      .withIndex("by_orderId", (q) => q.eq("orderId", orderId))
-      .take(Math.min(Math.max(limit, 1), 100)),
+      .withIndex("by_orderId_and_testMode", (q) =>
+        q.eq("orderId", orderId).eq("testMode", testMode),
+      )
+      .take(boundedLimit(limit)),
 });
 export const paymentsPage = internalQuery({
   args: { count: v.number(), skip: v.number(), testMode: v.boolean() },
   returns: v.array(schema.doc("payments")),
-  handler: async (ctx, { count, skip, testMode }) =>
-    (
+  handler: async (ctx, { count, skip, testMode }) => {
+    const page = validatePage(count, skip);
+    return (
       await ctx.db
         .query("payments")
         .withIndex("by_testMode", (q) => q.eq("testMode", testMode))
         .order("desc")
-        .take(Math.min(count + skip, 1000))
-    ).slice(skip, skip + count),
+        .take(page.count + page.skip)
+    ).slice(page.skip, page.skip + page.count);
+  },
 });
 export const plansPage = internalQuery({
   args: { count: v.number(), skip: v.number(), testMode: v.boolean() },
   returns: v.array(schema.doc("plans")),
-  handler: async (ctx, { count, skip, testMode }) =>
-    (
+  handler: async (ctx, { count, skip, testMode }) => {
+    const page = validatePage(count, skip);
+    return (
       await ctx.db
         .query("plans")
         .withIndex("by_testMode", (q) => q.eq("testMode", testMode))
         .order("desc")
-        .take(Math.min(count + skip, 1000))
-    ).slice(skip, skip + count),
+        .take(page.count + page.skip)
+    ).slice(page.skip, page.skip + page.count);
+  },
 });
 export const subscriptionsForUser = internalQuery({
-  args: { userId: v.string(), limit: v.number() },
+  args: { userId: v.string(), limit: v.number(), testMode: v.boolean() },
   returns: v.array(schema.doc("subscriptions")),
-  handler: (ctx, { userId, limit }) =>
+  handler: (ctx, { userId, limit, testMode }) =>
     ctx.db
       .query("subscriptions")
-      .withIndex("by_userId", (q) => q.eq("userId", userId))
-      .take(Math.min(Math.max(limit, 1), 100)),
+      .withIndex("by_testMode_and_userId", (q) => q.eq("testMode", testMode).eq("userId", userId))
+      .take(boundedLimit(limit)),
 });
