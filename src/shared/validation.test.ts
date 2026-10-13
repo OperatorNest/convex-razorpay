@@ -60,6 +60,17 @@ describe("shared validation and state", () => {
       Promise.resolve().then(() => linkedNotes({}, "u", undefined, { ["x".repeat(257)]: "v" })),
       "RAZORPAY_INVALID_ARGUMENT",
     );
+    for (const key of ["é", "$a"]) {
+      await expectRazorpayError(
+        Promise.resolve().then(() => validateNotes({ [key]: "v" })),
+        "RAZORPAY_INVALID_ARGUMENT",
+      );
+      await expectRazorpayError(
+        Promise.resolve().then(() => linkedNotes({}, "u", undefined, { [key]: "v" })),
+        "RAZORPAY_INVALID_ARGUMENT",
+      );
+    }
+    expect(validateNotes({ _a: "v", "a b": "v" })).toEqual({ _a: "v", "a b": "v" });
     expect(linkedNotes({}, "u-1", "external-1", { tier: "pro" })).toEqual({
       operatornestUserId: "u-1",
       operatornestExternalId: "external-1",
@@ -85,6 +96,12 @@ describe("shared validation and state", () => {
     expect(statusAdvances("subscription", "cancelled", "active")).toBe(false);
     expect(statusAdvances("subscription", "active", "cancelled")).toBe(true);
     expect(statusAdvances("subscription", "completed", "active")).toBe(false);
+  });
+
+  test("a subscription stored as unknown advances to any known status", () => {
+    expect(statusAdvances("subscription", "unknown", "active")).toBe(true);
+    expect(statusAdvances("subscription", "unknown", "created")).toBe(true);
+    expect(statusAdvances("subscription", "active", "unknown")).toBe(false);
   });
 
   test("terminal subscription snapshots still enforce nondecreasing paid_count", () => {

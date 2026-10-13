@@ -9,6 +9,7 @@ import {
   registerRoutes,
   webhookEventValidator,
 } from "./index.js";
+import { expectRazorpayError } from "../test-helpers.js";
 
 vi.mock("convex/server", async (importOriginal) => ({
   ...(await importOriginal<typeof import("convex/server")>()),
@@ -116,6 +117,7 @@ test("every public client method delegates to its component function", async () 
   await client.orders.releaseIdempotency(ctx, { idempotencyKey: "key_1" });
   await client.subscriptions.releaseIdempotency(ctx, { idempotencyKey: "key_1" });
   await client.plans.releaseIdempotency(ctx, { idempotencyKey: "key_1" });
+  await client.customers.releaseIdempotency(ctx, { idempotencyKey: "key_1" });
   expect(ctx.runMutation.mock.calls.at(-1)?.[1]).toEqual({
     idempotencyKey: "key_1",
     testMode: true,
@@ -176,8 +178,62 @@ test("every public client method delegates to its component function", async () 
     components.razorpay.orders.releaseIdempotency,
     components.razorpay.subscriptions.releaseIdempotency,
     components.razorpay.plans.releaseIdempotency,
+    components.razorpay.customers.releaseIdempotency,
   ]);
 });
+
+test.each(["é", "$a"])(
+  "note and metadata key %s that is not a Convex field name is rejected before any component call",
+  async (key) => {
+    const client = new Razorpay(components.razorpay);
+    const ctx = mockContext();
+    const calls = [
+      () =>
+        client.orders.create(ctx, {
+          amount: 50000,
+          currency: "INR",
+          partialPayment: false,
+          notes: { [key]: "v" },
+        }),
+      () =>
+        client.refunds.create(ctx, {
+          razorpayPaymentId: "pay_1",
+          amount: 100,
+          speed: "normal",
+          metadata: { [key]: "v" },
+        }),
+      () =>
+        client.customers.create(ctx, {
+          name: "Buyer",
+          email: "buyer@example.test",
+          notes: { [key]: "v" },
+        }),
+      () =>
+        client.customers.getOrCreate(ctx, {
+          name: "Buyer",
+          email: "buyer@example.test",
+          metadata: { [key]: "v" },
+        }),
+      () =>
+        client.plans.create(ctx, {
+          period: "monthly",
+          interval: 1,
+          item: { name: "Pro", amount: 69900, currency: "INR" },
+          notes: { [key]: "v" },
+        }),
+      () =>
+        client.subscriptions.create(ctx, {
+          razorpayPlanId: "plan_1",
+          totalCount: 12,
+          quantity: 1,
+          customerNotify: false,
+          metadata: { [key]: "v" },
+        }),
+    ];
+    for (const call of calls) await expectRazorpayError(call(), "RAZORPAY_INVALID_ARGUMENT");
+    expect(ctx.runAction).not.toHaveBeenCalled();
+  },
+);
 
 test("an omitted test mode is passed as undefined and a missing Checkout key stays undefined", async () => {
   const client = new Razorpay(components.razorpay);

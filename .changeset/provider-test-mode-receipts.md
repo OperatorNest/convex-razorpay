@@ -17,3 +17,10 @@
 - The package exports the `QueryContext`, `MutationContext` and `ActionContext` types that client methods accept.
 - Client methods pass omitted optional arguments to component functions as `undefined` fields.
 - `buildCheckoutOptions` returns every Checkout field, with `undefined` for omitted options and for the key of simulated orders.
+- Customers add `releaseIdempotency`, which removes an unresolved customer claim after the app establishes its provider outcome.
+- Breaking: a failed webhook receipt no longer deduplicates a redelivery of the same event; the redelivery is applied again and replaces the receipt, except a `RAZORPAY_STALE_WEBHOOK` receipt, which still deduplicates.
+- Breaking: note and metadata keys must be 1 to 256 printable ASCII characters not starting with `$`; client methods raise `RAZORPAY_INVALID_ARGUMENT` for other keys before calling the component.
+- Provider responses and signed webhook bodies drop keys that are not Convex field names before storing mirrors.
+- A subscription stored with status `unknown` advances to any known status.
+- A capture 4xx whose reconcile fetch fails rethrows the capture error instead of the fetch error.
+- Refund request fingerprints include testMode and serialize fields in stable key order.

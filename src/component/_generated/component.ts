@@ -175,6 +175,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         },
         Name
       >;
+      releaseIdempotency: FunctionReference<
+        "mutation",
+        "internal",
+        { idempotencyKey: string; testMode?: boolean },
+        boolean,
+        Name
+      >;
     };
     orders: {
       create: FunctionReference<

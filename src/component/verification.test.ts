@@ -175,6 +175,23 @@ test("payment-link callback verifies the fixed HMAC fixture without provider HTT
   expect(fetch).not.toHaveBeenCalled();
 });
 
+test("payment-link callback rejects a live key in env test mode before verifying", async () => {
+  vi.stubEnv("RAZORPAY_KEY_ID", "rzp_live_public");
+  vi.stubEnv("RAZORPAY_TEST_MODE", "true");
+  vi.stubEnv("RAZORPAY_KEY_SECRET", testOnlySigningSecret);
+  const t = convexTest(schema, modules);
+  await expectRazorpayError(
+    t.action(api.paymentLinks.verifyCheckout, {
+      razorpayPaymentLinkId: "plink_ID6MOhgkcoHjE7",
+      referenceId: "inv-001",
+      status: "paid",
+      razorpayPaymentId,
+      signature: linkSignature,
+    }),
+    "RAZORPAY_LIVE_KEY_TEST_MODE",
+  );
+});
+
 test("payment-link callback rejects a bad signature with a typed error", async () => {
   vi.stubEnv("RAZORPAY_KEY_SECRET", testOnlySigningSecret);
   const t = convexTest(schema, modules);

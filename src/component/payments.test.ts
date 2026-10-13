@@ -161,4 +161,34 @@ describe("payments", () => {
     );
     expect(await t.query(internal.lookup.payment, { id: authorizedPayment.id })).toBeNull();
   });
+
+  test("a capture 4xx rethrows the original error when the reconcile read fails", async () => {
+    const fetch = vi.fn(async (_url: string, init: RequestInit) =>
+      init.method === "POST"
+        ? Response.json({ error: { code: "BAD_REQUEST_ERROR" } }, { status: 400 })
+        : Response.json({ error: { code: "SERVER_ERROR" } }, { status: 503 }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const t = harness();
+    await expectRazorpayErrorDetails(
+      t.action(api.payments.capture, captureArgs),
+      "RAZORPAY_PROVIDER_ERROR",
+      { providerStatus: 400, retryable: false },
+    );
+    expect(fetch.mock.calls.map(([, init]) => init.method)).toEqual(["POST", "GET"]);
+  });
+
+  test("a capture 5xx is rethrown without a reconcile read", async () => {
+    const fetch = vi.fn(async () =>
+      Response.json({ error: { code: "SERVER_ERROR" } }, { status: 503 }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const t = harness();
+    await expectRazorpayErrorDetails(
+      t.action(api.payments.capture, captureArgs),
+      "RAZORPAY_PROVIDER_ERROR",
+      { providerStatus: 503 },
+    );
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
 });

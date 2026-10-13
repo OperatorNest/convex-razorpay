@@ -10,7 +10,7 @@ import type { FunctionHandle } from "convex/server";
 import { internal } from "./_generated/api.js";
 import { env } from "./_generated/server.js";
 import { compareHexSignatures, computeHmacSha256Hex } from "../shared/crypto.js";
-import { integerField, record, stringField } from "../shared/validation.js";
+import { dropInvalidFieldNames, integerField, record, stringField } from "../shared/validation.js";
 import { readTestMode } from "./provider.js";
 import { orderFields, paymentFields, refundFields, subscriptionFields } from "./mapping.js";
 import { applyOrder, applyPayment, applyRefund, applySubscription } from "./write.js";
@@ -34,7 +34,7 @@ type Parsed = {
 function parseEnvelopeUnsafe(body: string): Parsed {
   let value: unknown;
   try {
-    value = JSON.parse(body);
+    value = dropInvalidFieldNames(JSON.parse(body));
   } catch {
     throw razorpayError("RAZORPAY_MALFORMED_WEBHOOK");
   }
@@ -156,6 +156,7 @@ function safeErrorCode(error: unknown): string {
   return "RAZORPAY_INVALID_ENTITY";
 }
 
+/** Verifies and applies a signed webhook in the mode the component env selects; webhooks carry no `testMode` argument, so a client `testMode` option never applies. */
 export const ingest = action({
   args: {
     body: v.string(),
@@ -284,7 +285,13 @@ export const apply = internalMutation({
       .query("webhookEvents")
       .withIndex("by_bodyHash", (q) => q.eq("bodyHash", args.bodyHash))
       .unique();
-    if (byEventId || byBodyHash) return { status: "duplicate" };
+    const receipts = [byEventId, byBodyHash].filter((receipt) => receipt !== null);
+    if (
+      receipts.some(
+        (receipt) => receipt.status !== "failed" || receipt.errorCode === "RAZORPAY_STALE_WEBHOOK",
+      )
+    )
+      return { status: "duplicate" };
     const receivedAt = Date.now();
     const razorpayEntityId = typeof args.rawEntity?.id === "string" ? args.rawEntity.id : undefined;
     let errorCode =
@@ -317,6 +324,8 @@ export const apply = internalMutation({
         errorCode = safeErrorCode(error);
       }
     }
+    for (const receiptId of new Set(receipts.map((receipt) => receipt._id)))
+      await ctx.db.delete("webhookEvents", receiptId);
     await ctx.db.insert("webhookEvents", {
       eventId: args.eventId,
       event: args.event,

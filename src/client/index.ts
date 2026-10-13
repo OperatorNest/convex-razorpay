@@ -23,6 +23,7 @@ import type { Infer } from "convex/values";
 import { webhookEventValidator } from "../shared/validators.js";
 import type { ComponentApi } from "../component/_generated/component.js";
 import { isRazorpayError } from "../shared/errors.js";
+import { validateNotes } from "../shared/validation.js";
 
 import { maxWebhookBodyBytes } from "../shared/constants.js";
 
@@ -105,10 +106,12 @@ export class Razorpay {
   /** Creates and reads Razorpay orders and verifies their Checkout payments. */
   readonly orders = {
     /** Creates an order and stores its mirror. */
-    create: (
+    create: async (
       ctx: ActionContext,
       args: Omit<FunctionArgs<ComponentApi["orders"]["create"]>, "testMode">,
     ) => {
+      validateNotes(args.notes);
+      validateNotes(args.metadata);
       const componentArgs = {
         amount: args.amount,
         currency: args.currency,
@@ -254,10 +257,12 @@ export class Razorpay {
   /** Creates and reads Razorpay refunds. */
   readonly refunds = {
     /** Creates a refund and stores its mirror. */
-    create: (
+    create: async (
       ctx: ActionContext,
       args: Omit<FunctionArgs<ComponentApi["refunds"]["create"]>, "testMode">,
     ) => {
+      validateNotes(args.notes);
+      validateNotes(args.metadata);
       const componentArgs = {
         razorpayPaymentId: args.razorpayPaymentId,
         amount: args.amount,
@@ -290,10 +295,12 @@ export class Razorpay {
   /** Creates, reads and edits Razorpay customers. */
   readonly customers = {
     /** Creates a customer and stores its mirror. */
-    create: (
+    create: async (
       ctx: ActionContext,
       args: Omit<FunctionArgs<ComponentApi["customers"]["create"]>, "testMode">,
     ) => {
+      validateNotes(args.notes);
+      validateNotes(args.metadata);
       const componentArgs = {
         name: args.name,
         email: args.email,
@@ -311,10 +318,12 @@ export class Razorpay {
         .then((row) => exposeRow(row, (customerId) => ({ customerId })));
     },
     /** Returns or creates a customer linked to the requested app user. */
-    getOrCreate: (
+    getOrCreate: async (
       ctx: ActionContext,
       args: Omit<FunctionArgs<ComponentApi["customers"]["getOrCreate"]>, "testMode">,
     ) => {
+      validateNotes(args.notes);
+      validateNotes(args.metadata);
       const componentArgs = {
         name: args.name,
         email: args.email,
@@ -371,15 +380,26 @@ export class Razorpay {
         .runQuery(this.component.customers.get, componentArgs)
         .then((row) => (row === null ? null : exposeRow(row, (customerId) => ({ customerId }))));
     },
+    /** Releases an unresolved customer claim after the app establishes its provider outcome. */
+    releaseIdempotency: (
+      ctx: MutationContext,
+      args: Omit<FunctionArgs<ComponentApi["customers"]["releaseIdempotency"]>, "testMode">,
+    ) =>
+      ctx.runMutation(this.component.customers.releaseIdempotency, {
+        idempotencyKey: args.idempotencyKey,
+        testMode: this.options.testMode,
+      }),
   };
 
   /** Creates and reads Razorpay plans. */
   readonly plans = {
     /** Creates a plan and stores its mirror. */
-    create: (
+    create: async (
       ctx: ActionContext,
       args: Omit<FunctionArgs<ComponentApi["plans"]["create"]>, "testMode">,
     ) => {
+      validateNotes(args.notes);
+      validateNotes(args.metadata);
       const componentArgs = {
         period: args.period,
         interval: args.interval,
@@ -437,10 +457,12 @@ export class Razorpay {
   /** Creates, reads, changes and cancels Razorpay subscriptions and verifies their Checkout payments. */
   readonly subscriptions = {
     /** Creates a subscription and stores its mirror. */
-    create: (
+    create: async (
       ctx: ActionContext,
       args: Omit<FunctionArgs<ComponentApi["subscriptions"]["create"]>, "testMode">,
     ) => {
+      validateNotes(args.notes);
+      validateNotes(args.metadata);
       const componentArgs = {
         razorpayPlanId: args.razorpayPlanId,
         totalCount: args.totalCount,
@@ -671,7 +693,7 @@ async function readWebhookBody(request: Request): Promise<string> {
   }
 }
 
-/** Registers an HTTP route that verifies and applies signed Razorpay webhook events. */
+/** Registers an HTTP route that verifies and applies signed Razorpay webhook events in the mode the component env selects, ignoring any client `testMode` option. */
 export function registerRoutes(
   http: HttpRouter,
   component: ComponentApi,

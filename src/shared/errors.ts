@@ -2,6 +2,7 @@ import { ConvexError } from "convex/values";
 import { truncateText } from "./bounds.js";
 
 // repository-codes:begin
+/** Every code a Razorpay component error can carry, each with one fixed message in the README error table. */
 export const RAZORPAY_ERROR_CODES = [
   "RAZORPAY_INVALID_ARGUMENT",
   "RAZORPAY_INVALID_RESPONSE",

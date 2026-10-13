@@ -164,9 +164,9 @@ export const create = action({
         created_at: Math.floor(Date.now() / 1000),
       };
     } else {
-      if (shouldReconcile && idempotencyKey)
+      if (shouldReconcile && idempotencyKey) {
         raw = await findByIdempotencyKey("order", idempotencyKey, receipt);
-      if (raw === undefined) {
+      } else {
         try {
           raw = await requestProvider("POST", "/orders", {
             body: {
@@ -299,7 +299,6 @@ export const verifyCheckout = action({
   returns: schema.doc("payments"),
   handler: async (ctx, args): Promise<Doc<"payments">> => {
     if (
-      !requireConfigValue(readConfig(env).keySecret) ||
       !(await verifyOrderCheckout(
         requireConfigValue(readConfig(env).keySecret),
         args.razorpayOrderId,

@@ -4,7 +4,7 @@ import { isRazorpayError, razorpayError } from "../shared/errors.js";
 import { isDefinitiveNoCreate, providerErrorCode } from "../shared/providerErrors.js";
 
 import { v } from "convex/values";
-import { action, query } from "./_generated/server.js";
+import { action, mutation, query } from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
 import schema from "./schema.js";
 import type { Doc } from "./_generated/dataModel.js";
@@ -238,9 +238,9 @@ async function createCustomer(
       created_at: Math.floor(Date.now() / 1000),
     };
   } else {
-    if (shouldReconcile && idempotencyKey)
+    if (shouldReconcile && idempotencyKey) {
       raw = await findByIdempotencyKey("customer", idempotencyKey);
-    if (raw === undefined) {
+    } else {
       try {
         raw = await requestProvider("POST", "/customers", {
           body: {
@@ -374,4 +374,15 @@ export const get = query({
         q.eq("userId", userId).eq("testMode", readTestMode(testMode)),
       )
       .first(),
+});
+
+export const releaseIdempotency = mutation({
+  args: { idempotencyKey: v.string(), testMode: v.optional(v.boolean()) },
+  returns: v.boolean(),
+  handler: (ctx, args): Promise<boolean> =>
+    ctx.runMutation(internal.idempotency.release, {
+      resource: "customer",
+      idempotencyKey: args.idempotencyKey,
+      testMode: args.testMode,
+    }),
 });

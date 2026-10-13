@@ -97,7 +97,9 @@ export const capture = action({
         error.data.providerStatus >= 500
       )
         throw error;
-      const current = await requestProvider("GET", paymentPath, { idempotent: true });
+      const current = await requestProvider("GET", paymentPath, { idempotent: true }).catch(() => {
+        throw error;
+      });
       if (
         !isRecord(current) ||
         current.status !== "captured" ||

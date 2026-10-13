@@ -32,7 +32,7 @@ export function validateNotes(notes: Record<string, string> | undefined): Record
     entries.length > 15 ||
     entries.some(
       ([key, value]) =>
-        !key || key.length > 256 || value.length > 256 || !wellFormed(key) || !wellFormed(value),
+        !isConvexFieldName(key) || key.length > 256 || value.length > 256 || !wellFormed(value),
     )
   ) {
     throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
@@ -87,6 +87,7 @@ export function statusAdvances(
       paused: ["active", "pending", "halted"],
     };
     if (currentStatus === nextStatus) return countersDoNotDecrease;
+    if (currentStatus === "unknown") return Object.hasOwn(allowed, nextStatus);
     return allowed[currentStatus]?.includes(nextStatus) ?? false;
   }
   if (kind === "refund" && currentStatus !== "pending" && currentStatus !== "unknown") {
@@ -132,6 +133,22 @@ export function omitUndefined(value: unknown): unknown {
       Object.entries(value)
         .filter(([, item]) => item !== undefined)
         .map(([key, item]) => [key, omitUndefined(item)]),
+    );
+  }
+  return value;
+}
+
+export function isConvexFieldName(key: string): boolean {
+  return /^[\x20-\x7E]+$/u.test(key) && !key.startsWith("$");
+}
+
+export function dropInvalidFieldNames(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(dropInvalidFieldNames);
+  if (isRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([key]) => isConvexFieldName(key))
+        .map(([key, item]) => [key, dropInvalidFieldNames(item)]),
     );
   }
   return value;

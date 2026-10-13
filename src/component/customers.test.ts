@@ -32,6 +32,9 @@ describe("customers", () => {
   afterEach(restoreRazorpayTestState);
 
   test.each([
+    { name: "Other Buyer" },
+    { email: "other@example.test" },
+    { contact: "+919000000000" },
     { userId: "other" },
     { gstin: "1234567890ABCDE" },
     { notes: { sku: "other" } },
@@ -227,5 +230,105 @@ describe("customers", () => {
       { idempotencyKey: keyedArgs.idempotencyKey, status: "completed" },
       { idempotencyKey: secondKey.idempotencyKey, status: "completed" },
     ]);
+  });
+
+  test("a customer claim that reconciles to no provider customer stays pending until released", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_567_674_600_000);
+    stubSandboxEnv();
+    const fetch = vi
+      .fn<(url: string, init: RequestInit) => Promise<Response>>()
+      .mockRejectedValueOnce(new TypeError("connection reset"))
+      .mockResolvedValueOnce(Response.json({ entity: "collection", count: 0, items: [] }))
+      .mockResolvedValueOnce(Response.json(providerCustomer));
+    vi.stubGlobal("fetch", fetch);
+    const t = harness();
+    await expectRazorpayError(t.action(api.customers.create, keyedArgs), "RAZORPAY_NETWORK_ERROR");
+    vi.setSystemTime(1_567_674_600_000 + 11 * 60_000);
+    await expectRazorpayError(
+      t.action(api.customers.create, keyedArgs),
+      "RAZORPAY_IDEMPOTENCY_PENDING",
+    );
+    expect(
+      await t.mutation(api.customers.releaseIdempotency, {
+        idempotencyKey: keyedArgs.idempotencyKey,
+      }),
+    ).toBe(true);
+    expect(await readClaims(t)).toEqual([]);
+    expect(await t.action(api.customers.create, keyedArgs)).toMatchObject({
+      razorpayCustomerId: providerCustomer.id,
+    });
+    expect(fetch.mock.calls.map(([, init]) => init.method)).toEqual(["POST", "GET", "POST"]);
+    expect(
+      await t.mutation(api.customers.releaseIdempotency, {
+        idempotencyKey: keyedArgs.idempotencyKey,
+      }),
+    ).toBe(false);
+  });
+
+  test("a local customer ownership conflict after the provider create fails the claim", async () => {
+    stubSandboxEnv();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json(providerCustomer)),
+    );
+    const t = harness();
+    await t.action(api.customers.create, { ...keyedArgs, userId: "owner" });
+    const secondKey = { ...keyedArgs, idempotencyKey: "fixture_customer_other_owner" };
+    await expectRazorpayError(
+      t.action(api.customers.create, { ...secondKey, userId: "other" }),
+      "RAZORPAY_CUSTOMER_CONFLICT",
+    );
+    expect(await readClaims(t)).toMatchObject([
+      { idempotencyKey: keyedArgs.idempotencyKey, status: "completed" },
+      {
+        idempotencyKey: secondKey.idempotencyKey,
+        status: "failed",
+        errorCode: "RAZORPAY_CUSTOMER_CONFLICT",
+      },
+    ]);
+  });
+
+  test("a customer edit without a profile field is rejected before any provider request", async () => {
+    stubSandboxEnv();
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    const t = harness();
+    await expectRazorpayError(
+      t.action(api.customers.edit, { razorpayCustomerId: providerCustomer.id }),
+      "RAZORPAY_INVALID_ARGUMENT",
+    );
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  test("a customer edit response for another customer is rejected without storing it", async () => {
+    stubSandboxEnv();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ ...providerCustomer, id: "cust_other" })),
+    );
+    const t = harness();
+    await expectRazorpayError(
+      t.action(api.customers.edit, { razorpayCustomerId: providerCustomer.id, name: "Renamed" }),
+      "RAZORPAY_INVALID_RESPONSE",
+    );
+    expect(await t.run((ctx) => ctx.db.query("customers").take(10))).toEqual([]);
+  });
+
+  test("a provider customer response drops keys that are not Convex field names before storing", async () => {
+    stubSandboxEnv();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          ...providerCustomer,
+          notes: { ...providerCustomer.notes, é: "accent", $a: "dollar", _a: "underscore" },
+        }),
+      ),
+    );
+    const t = harness();
+    const created = await t.action(api.customers.create, keyedArgs);
+    expect(created.notes).toEqual({ ...providerCustomer.notes, _a: "underscore" });
+    expect(created.raw.notes).toEqual({ ...providerCustomer.notes, _a: "underscore" });
   });
 });

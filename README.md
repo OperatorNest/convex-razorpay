@@ -7,7 +7,7 @@ Razorpay payments for Convex: server-side orders, payments, refunds, customers, 
 ## Install
 
 ```sh
-pnpm add @operatornest/convex-razorpay convex@^1.46.0 convex-helpers@^0.1.106
+pnpm add @operatornest/convex-razorpay convex@^1.46.0 convex-helpers@^0.1.128
 ```
 
 `convex` and `convex-helpers` are peer dependencies. This package has no runtime dependencies. Consumers need Node.js 24 or newer for their development toolchain.
@@ -149,7 +149,7 @@ Send Checkout's callback to an authenticated action using `razorpay.orders.verif
 | RefundStatus                                                                         | pending on acceptance, processed after completion, failed after failure; unknown preserves an unrecognized state.                                                                                                                                                                                        |
 | SubscriptionStatus                                                                   | created on creation, authenticated after authentication, active when billing starts, pending after a failed charge, halted after retry exhaustion, paused on pause, cancelled on cancellation, completed after all cycles, expired after authentication expiry; unknown preserves an unrecognized state. |
 | PaymentLinkStatus                                                                    | created on creation, partially_paid after partial payment, paid after payment, expired at expiry, cancelled on cancellation.                                                                                                                                                                             |
-| WebhookStatus                                                                        | processed after applying entities, ignored for unsupported events, failed for invalid entities, duplicate for an already applied delivery.                                                                                                                                                               |
+| WebhookStatus                                                                        | processed after applying entities, ignored for unsupported events, failed for an invalid entity, a `RAZORPAY_STALE_WEBHOOK` event or an apply error, duplicate for an already recorded delivery; a redelivery of a failed event is processed again unless it failed as stale.                            |
 | IdempotencyStatus                                                                    | pending while the provider outcome is unresolved, completed after storing its mirror, failed after definitive rejection.                                                                                                                                                                                 |
 
 Domain terms follow the [Razorpay API reference](https://razorpay.com/docs/api/). Raw provider fields retain provider spelling and units.
@@ -231,6 +231,7 @@ Every method takes `(ctx, args)`. Constructor options select testMode and onEven
 | `customers.fetch`                  | action   | `{ razorpayCustomerId }`                                                                                                                 | Provider customer                                                              |
 | `customers.edit`                   | action   | `{ razorpayCustomerId, name?, email?, contact? }`                                                                                        | Customer mirror                                                                |
 | `customers.get`                    | query    | `{ userId }`                                                                                                                             | Customer mirror or `null`                                                      |
+| `customers.releaseIdempotency`     | mutation | `{ idempotencyKey }`                                                                                                                     | `true` when an unresolved claim was released                                   |
 | `plans.create`                     | action   | `{ period, interval, item: { name, amount, currency, description? }, notes?, ...link }`                                                  | Plan mirror                                                                    |
 | `plans.fetch`                      | action   | `{ razorpayPlanId }`                                                                                                                     | Provider plan                                                                  |
 | `plans.fetchAll`                   | action   | `{ count?, skip? }`                                                                                                                      | Provider page of plans                                                         |
@@ -299,24 +300,24 @@ Set `RAZORPAY_TEST_MODE=true` and leave `RAZORPAY_KEY_ID` unset to simulate prov
 
 ## Limits and retention
 
-| Input                                    | Limit                                                                                                                        |
-| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| Provider page `count`                    | 1–100; default 10                                                                                                            |
-| Provider page `skip`                     | 0–900; default 0                                                                                                             |
-| Stored page `paginationOpts.numItems`    | 1–100                                                                                                                        |
-| Stored page cursor and `endCursor`       | At most 4096 characters; a JSON array of at most 16 values                                                                   |
-| Stored page reads                        | At most numItems + 1 rows and 1 MiB per page, including with `endCursor`                                                     |
-| Subscription get `statuses`              | At most 20                                                                                                                   |
-| Notes and metadata                       | 15 entries each; nonempty keys and values up to 256 UTF-16 code units; merged provider notes 15 entries                      |
-| Linkage strings (`userId`, `externalId`) | 1–256 UTF-16 code units                                                                                                      |
-| Idempotency key                          | 10–128 ASCII letters, digits, underscores or hyphens                                                                         |
-| Plan item name and description           | Name 1–256 and description 1–4096 UTF-16 code units                                                                          |
-| Customer fields                          | Name 3–50 characters; email at most 64; contact 8–15 digits with optional leading plus; gstin 15 uppercase letters or digits |
-| Webhook body                             | At most 131072 bytes                                                                                                         |
-| Provider error `providerCode`            | At most 64 UTF-16 code units                                                                                                 |
-| Claim reconciliation                     | At most 20 provider pages of 100 records                                                                                     |
+| Input                                    | Limit                                                                                                                                                    |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Provider page `count`                    | 1–100; default 10                                                                                                                                        |
+| Provider page `skip`                     | 0–900; default 0                                                                                                                                         |
+| Stored page `paginationOpts.numItems`    | 1–100                                                                                                                                                    |
+| Stored page cursor and `endCursor`       | At most 4096 characters; a JSON array of at most 16 values                                                                                               |
+| Stored page reads                        | At most numItems + 1 rows and 1 MiB per page, including with `endCursor`                                                                                 |
+| Subscription get `statuses`              | At most 20                                                                                                                                               |
+| Notes and metadata                       | 15 entries each; keys of 1 to 256 printable ASCII characters not starting with `$`, values up to 256 UTF-16 code units; merged provider notes 15 entries |
+| Linkage strings (`userId`, `externalId`) | 1–256 UTF-16 code units                                                                                                                                  |
+| Idempotency key                          | 10–128 ASCII letters, digits, underscores or hyphens                                                                                                     |
+| Plan item name and description           | Name 1–256 and description 1–4096 UTF-16 code units                                                                                                      |
+| Customer fields                          | Name 3–50 characters; email at most 64; contact 8–15 digits with optional leading plus; gstin 15 uppercase letters or digits                             |
+| Webhook body                             | At most 131072 bytes                                                                                                                                     |
+| Provider error `providerCode`            | At most 64 UTF-16 code units                                                                                                                             |
+| Claim reconciliation                     | At most 20 provider pages of 100 records                                                                                                                 |
 
-Idempotency claims are kept indefinitely, including pending, completed and failed claims. Only explicit aggregate release removes an unresolved claim after the app establishes its provider outcome; completed claims cannot be released. Entity mirrors also have no automatic age cutoff. Apps define reconciliation and erasure workflows. Raw provider fields may contain personal data; webhook raw bodies are not stored.
+Idempotency claims are kept indefinitely, including pending, completed and failed claims. Only `releaseIdempotency` on orders, plans, subscriptions or customers removes an unresolved claim, after the app establishes its provider outcome; completed claims cannot be released. Entity mirrors also have no automatic age cutoff. Apps define reconciliation and erasure workflows. Raw provider fields may contain personal data; webhook raw bodies are not stored.
 
 The daily cron removes webhook deduplication records older than 30 days in bounded batches; cleanup is internal and has no public function. A signed event created more than 29 days before receipt is recorded as a failed receipt with `RAZORPAY_STALE_WEBHOOK`, returns 200 and does not invoke onEvent, so a provider retry after cleanup cannot apply it again. A reconciliation scan without a matching key leaves the claim pending, including when a short page ends the scan; absence cannot establish the original POST outcome.
 

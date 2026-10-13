@@ -3,7 +3,7 @@ import { paymentLinkStatusValidator } from "../shared/statuses.js";
 import { v } from "convex/values";
 import { razorpayError } from "../shared/errors.js";
 import { readConfig, requireConfigValue } from "../shared/config.js";
-import { readTestMode } from "./provider.js";
+import { assertEnvModeConsistent } from "./provider.js";
 import { verifyPaymentLinkCallback } from "../shared/crypto.js";
 
 export const verifyCheckout = action({
@@ -16,7 +16,7 @@ export const verifyCheckout = action({
   },
   returns: v.literal(true),
   handler: async (_ctx, args): Promise<true> => {
-    readTestMode();
+    assertEnvModeConsistent();
     const keySecret = requireConfigValue(readConfig(env).keySecret);
     if (
       !(await verifyPaymentLinkCallback(

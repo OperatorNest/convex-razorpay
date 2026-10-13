@@ -3,10 +3,14 @@ import { razorpayError } from "../shared/errors.js";
 import { classifyProviderError } from "../shared/providerErrors.js";
 import { env } from "./_generated/server.js";
 import { collectionItems } from "./mapping.js";
-import { isRecord } from "../shared/validation.js";
+import { dropInvalidFieldNames, isRecord } from "../shared/validation.js";
 
 export function readTestMode(option?: boolean): boolean {
   return resolveRazorpayTestMode(option, env);
+}
+
+export function assertEnvModeConsistent(): void {
+  resolveRazorpayTestMode(undefined, env);
 }
 
 export function resolveProviderMode(option?: boolean): { testMode: boolean; isSimulated: boolean } {
@@ -63,7 +67,7 @@ export async function requestProvider(
   if (!response.ok) {
     throw classifyProviderError(response.status, body);
   }
-  return body;
+  return dropInvalidFieldNames(body);
 }
 
 export function listPath(path: string, count?: number, skip?: number): string {

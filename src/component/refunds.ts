@@ -9,7 +9,7 @@ import schema from "./schema.js";
 import type { Doc } from "./_generated/dataModel.js";
 import { computeSha256Hex } from "../shared/crypto.js";
 import { assertModeMatches, requestProvider, resolveProviderMode } from "./provider.js";
-import { deterministicTestId, linkedNotes, record } from "../shared/validation.js";
+import { deterministicTestId, linkedNotes, record, stableStringify } from "../shared/validation.js";
 import {
   linkArgs,
   notesArg,
@@ -40,13 +40,14 @@ export const create = action({
     }
     validateIdempotencyKey(args.idempotencyKey);
     const notes = linkedNotes(args.notes, args.userId, args.externalId, args.metadata);
-    const requestFingerprint = JSON.stringify([
-      args.razorpayPaymentId,
-      args.amount,
-      args.speed,
-      args.receipt,
-      Object.entries(notes).toSorted(([a], [b]) => a.localeCompare(b)),
-    ]);
+    const requestFingerprint = stableStringify({
+      testMode,
+      razorpayPaymentId: args.razorpayPaymentId,
+      amount: args.amount,
+      speed: args.speed,
+      receipt: args.receipt,
+      notes,
+    });
     const existing = await ctx.runQuery(internal.mutations.refundByKey, {
       idempotencyKey,
       testMode,

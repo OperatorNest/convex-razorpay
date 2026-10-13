@@ -470,7 +470,6 @@ export const verifyCheckout = action({
   returns: schema.doc("payments"),
   handler: async (ctx, args): Promise<Doc<"payments">> => {
     if (
-      !requireConfigValue(readConfig(env).keySecret) ||
       !(await verifySubscriptionCheckout(
         requireConfigValue(readConfig(env).keySecret),
         args.razorpaySubscriptionId,

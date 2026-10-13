@@ -115,8 +115,7 @@ export const create = action({
     } else {
       if (shouldReconcile && args.idempotencyKey) {
         raw = await findByIdempotencyKey("plan", args.idempotencyKey);
-      }
-      if (raw === undefined) {
+      } else {
         try {
           raw = await requestProvider("POST", "/plans", {
             body: { period: args.period, interval: args.interval, item: args.item, notes },

@@ -67,6 +67,86 @@ describe("webhooks", () => {
     });
   });
 
+  test("a signed event drops provider keys that are not Convex field names before storing", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_567_674_600_000);
+    const t = harness();
+    const body = JSON.stringify({
+      entity: "event",
+      event: "payment.authorized",
+      created_at: 1_567_674_599,
+      payload: {
+        payment: {
+          entity: {
+            ...payment,
+            id: "pay_field_names",
+            notes: { é: "accent", $a: "dollar", _a: "underscore" },
+            acquirer_data: { é: 1, $a: 2, rrn: "kept" },
+          },
+        },
+      },
+    });
+    expect(
+      await t.action(api.webhooks.ingest, {
+        body,
+        signature: await computeHmacSha256Hex("fixture_webhook", body),
+        eventId: "evt_field_names",
+      }),
+    ).toMatchObject({ status: "processed" });
+    const [stored] = await t.run((ctx) => ctx.db.query("payments").take(2));
+    expect(stored?.notes).toEqual({ _a: "underscore" });
+    expect(stored?.raw).toMatchObject({
+      notes: { _a: "underscore" },
+      acquirer_data: { rrn: "kept" },
+    });
+    expect(stored?.raw.acquirer_data).toEqual({ rrn: "kept" });
+  });
+
+  test("a redelivery after an apply failure reprocesses the event and replaces its failed receipt", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_567_674_600_000);
+    const t = harness();
+    const ingestSigned = async (eventId: string, status: string) => {
+      const body = JSON.stringify({
+        entity: "event",
+        event: "payment.authorized",
+        created_at: 1_567_674_599,
+        payload: { payment: { entity: { ...payment, id: "pay_redelivery", status } } },
+      });
+      return t.action(api.webhooks.ingest, {
+        body,
+        signature: await computeHmacSha256Hex("fixture_webhook", body),
+        eventId,
+      });
+    };
+    vi.stubEnv("RAZORPAY_KEY_ID", "rzp_live_fixture");
+    expect(await ingestSigned("evt_live", "created")).toMatchObject({ status: "processed" });
+    vi.stubEnv("RAZORPAY_KEY_ID", "rzp_test_fixture");
+    expect(await ingestSigned("evt_redelivery", "authorized")).toEqual({
+      status: "failed",
+      errorCode: "RAZORPAY_MODE_MISMATCH",
+    });
+    await t.run(async (ctx) => {
+      for (const row of await ctx.db.query("payments").take(2))
+        await ctx.db.delete("payments", row._id);
+    });
+    expect(await ingestSigned("evt_redelivery", "authorized")).toMatchObject({
+      status: "processed",
+    });
+    expect(await ingestSigned("evt_redelivery", "authorized")).toEqual({ status: "duplicate" });
+    expect(
+      await t.run((ctx) =>
+        ctx.db
+          .query("webhookEvents")
+          .withIndex("by_eventId", (q) => q.eq("eventId", "evt_redelivery"))
+          .take(2),
+      ),
+    ).toMatchObject([{ status: "processed" }]);
+    expect(await t.run((ctx) => ctx.db.query("payments").take(2))).toMatchObject([
+      { razorpayPaymentId: "pay_redelivery", status: "authorized", testMode: true },
+    ]);
+  });
+
   test("signed webhooks reject test mode with a recognizable live key", async () => {
     vi.stubEnv("RAZORPAY_TEST_MODE", "true");
     vi.stubEnv("RAZORPAY_KEY_ID", "rzp_live_fixture");

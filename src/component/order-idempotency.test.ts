@@ -290,6 +290,21 @@ test("a reused refund idempotencyKey with a different request is a conflict in b
   expect((await t.action(api.refunds.create, { speed: "normal", ...args })).razorpayRefundId).toBe(
     first.razorpayRefundId,
   );
+  const reordered = { ...args, idempotencyKey: "refund_note_order_key" };
+  const firstReordered = await t.action(api.refunds.create, {
+    speed: "normal",
+    ...reordered,
+    notes: { a: "1", b: "2" },
+  });
+  expect(
+    (
+      await t.action(api.refunds.create, {
+        speed: "normal",
+        ...reordered,
+        notes: { b: "2", a: "1" },
+      })
+    ).razorpayRefundId,
+  ).toBe(firstReordered.razorpayRefundId);
   await conflict(t.action(api.refunds.create, { speed: "normal", ...args, amount: 200 }));
   await conflict(
     t.action(api.refunds.create, { speed: "normal", ...args, notes: { why: "other" } }),
