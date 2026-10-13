@@ -550,7 +550,7 @@ describe("orders", () => {
         userId: "second",
       }),
       "RAZORPAY_PROVIDER_ERROR",
-      { providerStatus: 400, retryable: false },
+      { providerStatus: 400, retryable: true },
     );
     expect(
       await t.run((ctx) =>

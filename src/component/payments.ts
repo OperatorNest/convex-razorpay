@@ -36,9 +36,7 @@ export const fetch = action({
       const { _id, _creationTime, ...entity } = local;
       return entity;
     }
-    const raw = await requestProvider("GET", `/payments/${encodeURIComponent(razorpayPaymentId)}`, {
-      idempotent: true,
-    });
+    const raw = await requestProvider("GET", `/payments/${encodeURIComponent(razorpayPaymentId)}`);
     if (parseProviderResponse(() => record(raw)).id !== razorpayPaymentId)
       throw razorpayError("RAZORPAY_INVALID_RESPONSE");
     return { ...paymentFields(raw, Date.now()), testMode: mode.testMode };
@@ -88,6 +86,7 @@ export const capture = action({
     try {
       raw = await requestProvider("POST", `${paymentPath}/capture`, {
         body: { amount: args.amount, currency: args.currency },
+        isDeduplicated: true,
       });
     } catch (error) {
       if (
@@ -97,7 +96,7 @@ export const capture = action({
         error.data.providerStatus >= 500
       )
         throw error;
-      const current = await requestProvider("GET", paymentPath, { idempotent: true }).catch(() => {
+      const current = await requestProvider("GET", paymentPath).catch(() => {
         throw error;
       });
       if (
@@ -129,9 +128,7 @@ export const fetchAll = action({
       return (
         await ctx.runQuery(internal.lookup.paymentsPage, { count, skip, testMode: true })
       ).map(({ _id, _creationTime, ...entity }) => entity);
-    const items = collectionItems(
-      await requestProvider("GET", listPath("/payments", count, skip), { idempotent: true }),
-    );
+    const items = collectionItems(await requestProvider("GET", listPath("/payments", count, skip)));
     return items.map((raw) =>
       Object.assign(paymentFields(raw, Date.now()), { testMode: mode.testMode }),
     );

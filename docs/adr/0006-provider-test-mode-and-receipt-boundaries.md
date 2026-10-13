@@ -6,6 +6,6 @@ Webhook deduplication cleanup is an internal mutation scheduled by the daily cro
 
 Customer creates with an idempotency key use the same claim, `operatornestIdempotencyKey` provider note and listing reconciliation as orders, plans and subscriptions; the claim resource union includes `customer`. Refunds and customers gain `by_idempotencyKey_and_testMode` indexes so one key resolves to a separate row in each mode.
 
-Subscription provider operation responses pass through the same status-advance rule as webhooks. A capture 4xx is recovered only when a fetched payment is captured with the requested amount and currency. A simulated duplicate receipt is not retryable and leaves its keyed claim failed.
+Subscription provider operation responses pass through the same status-advance rule as webhooks. A capture 4xx is recovered only when a fetched payment is captured with the requested amount and currency. A simulated duplicate receipt is a definitive refusal, so it is retryable, and it leaves its keyed claim failed.
 
 Checkout signature failures raise `RAZORPAY_INVALID_PAYMENT_SIGNATURE`. Order and plan amounts require a positive integer; Razorpay enforces currency minimums. The package exports `webhookEventValidator` for app callback args.

@@ -2,13 +2,7 @@ import { httpRouter } from "convex/server";
 import { ConvexError } from "convex/values";
 import { describe, expect, expectTypeOf, test, vi } from "vitest";
 import { components, internal } from "../../example/convex/_generated/api.js";
-import {
-  Razorpay,
-  buildCheckoutOptions,
-  isRazorpayError,
-  registerRoutes,
-  webhookEventValidator,
-} from "./index.js";
+import { Razorpay, buildCheckoutOptions, isRazorpayError, webhookEventValidator } from "./index.js";
 import { expectRazorpayError } from "../test-helpers.js";
 
 vi.mock("convex/server", async (importOriginal) => ({
@@ -26,6 +20,12 @@ function mockContext() {
     runMutation: vi.fn().mockResolvedValue(1),
   };
 }
+
+test("config.get queries the component with the client test mode", async () => {
+  const ctx = mockContext();
+  await new Razorpay(components.razorpay, { testMode: true }).config.get(ctx);
+  expect(ctx.runQuery.mock.calls).toEqual([[components.razorpay.config.get, { testMode: true }]]);
+});
 
 test("every public client method delegates to its component function", async () => {
   const client = new Razorpay(components.razorpay, { testMode: true });
@@ -300,31 +300,27 @@ test("testMode is excluded from public call arguments at the type boundary", () 
 
 function routeHandler(
   path: `/${string}` = "/razorpay/webhook",
-  throughClient = false,
-  withCallback = true,
-  overrideCallback = false,
+  constructorCallback = true,
+  routeCallback = false,
 ) {
   const http = httpRouter();
   const client = new Razorpay(
     components.razorpay,
-    overrideCallback ? {} : { onEvent: internal.webhookCallback.onEvent },
+    constructorCallback ? { onEvent: internal.webhookCallback.onEvent } : {},
   );
-  if (throughClient)
-    client.registerRoutes(http, {
-      path,
-      ...(overrideCallback ? { onEvent: internal.webhookCallback.onEvent } : {}),
-    });
-  else
-    registerRoutes(http, components.razorpay, {
-      path,
-      ...(withCallback ? { onEvent: internal.webhookCallback.onEvent } : {}),
-    });
+  client.registerRoutes(http, {
+    path,
+    ...(routeCallback ? { onEvent: internal.webhookCallback.onEvent } : {}),
+  });
   const handler = http.exactRoutes.get(path)?.get("POST");
   if (!handler) throw new Error("Missing webhook route");
+  return handler;
+}
 
-  return handler as typeof handler & {
-    _handler: (ctx: ReturnType<typeof mockContext>, request: Request) => Promise<Response>;
-  };
+function isRouteFunction(
+  value: unknown,
+): value is (ctx: ReturnType<typeof mockContext>, request: Request) => Promise<Response> {
+  return typeof value === "function";
 }
 
 function invokeRoute(
@@ -332,8 +328,9 @@ function invokeRoute(
   ctx: ReturnType<typeof mockContext>,
   req: Request,
 ) {
-  // eslint-disable-next-line eslint/no-underscore-dangle -- Convex hides the registered handler in its public type.
-  return handler._handler(ctx, req);
+  const run: unknown = Reflect.get(handler, "_handler");
+  if (!isRouteFunction(run)) throw new Error("Missing webhook route function");
+  return run(ctx, req);
 }
 
 function request(
@@ -363,7 +360,7 @@ describe("registered webhook route", () => {
   });
 
   test("client shortcut supports a custom path and missing headers", async () => {
-    const handler = routeHandler("/custom/webhook", true);
+    const handler = routeHandler("/custom/webhook");
     const ctx = mockContext();
     expect((await invokeRoute(handler, ctx, request("{}", {}))).status).toBe(200);
     expect(ctx.runAction).toHaveBeenCalledWith(components.razorpay.webhooks.ingest, {
@@ -375,7 +372,7 @@ describe("registered webhook route", () => {
   });
 
   test("an empty body without a callback is forwarded without a handle", async () => {
-    const handler = routeHandler("/razorpay/webhook", false, false);
+    const handler = routeHandler("/razorpay/webhook", false);
     const ctx = mockContext();
     const empty = new Request("https://example.test/razorpay/webhook", { method: "POST" });
     expect((await invokeRoute(handler, ctx, empty)).status).toBe(200);
@@ -387,7 +384,7 @@ describe("registered webhook route", () => {
   });
 
   test("a client callback option can be supplied when registering the route", async () => {
-    const handler = routeHandler("/override/webhook", true, true, true);
+    const handler = routeHandler("/override/webhook", false, true);
     const ctx = mockContext();
     expect((await invokeRoute(handler, ctx, request())).status).toBe(200);
     expect(ctx.runAction.mock.calls[0]?.[1]).toHaveProperty(
@@ -396,10 +393,10 @@ describe("registered webhook route", () => {
     );
   });
 
-  test("oversized and undecodable bodies return specific statuses", async () => {
+  test("oversized and undecodable bodies return 400 before ingest", async () => {
     const handler = routeHandler();
     const ctx = mockContext();
-    expect((await invokeRoute(handler, ctx, request("x".repeat(128 * 1024 + 1)))).status).toBe(413);
+    expect((await invokeRoute(handler, ctx, request("x".repeat(128 * 1024 + 1)))).status).toBe(400);
     expect((await invokeRoute(handler, ctx, request(new Uint8Array([0xff])))).status).toBe(400);
     expect(ctx.runAction).not.toHaveBeenCalled();
   });
@@ -428,7 +425,7 @@ describe("registered webhook route", () => {
     ctx.runAction.mockRejectedValueOnce(
       new ConvexError({
         code: "RAZORPAY_INVALID_WEBHOOK_SIGNATURE",
-        message: "The webhook signature is invalid.",
+        message: "The webhook signature is missing or wrong.",
       }),
     );
     expect((await invokeRoute(handler, ctx, request())).status).toBe(401);

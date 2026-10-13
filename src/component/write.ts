@@ -131,7 +131,7 @@ export async function applyOrder(
       )
       .first();
     if (duplicate)
-      throw razorpayError("RAZORPAY_PROVIDER_ERROR", { providerStatus: 400, retryable: false });
+      throw razorpayError("RAZORPAY_PROVIDER_ERROR", { providerStatus: 400, retryable: true });
   }
   const id = await ctx.db.insert("orders", {
     ...next,

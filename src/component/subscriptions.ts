@@ -1,6 +1,6 @@
 import { parseProviderResponse } from "../shared/providerErrors.js";
 import { paginationOptsValidator, paginationResultValidator } from "convex/server";
-import { boundedPage } from "../shared/bounds.js";
+import { boundedPage, validateIdempotencyKey } from "../shared/bounds.js";
 import { paginator } from "convex-helpers/server/pagination";
 import { subscriptionFields } from "./mapping.js";
 import schema from "./schema.js";
@@ -27,13 +27,7 @@ import {
   stableStringify,
   validateNotes,
 } from "../shared/validation.js";
-import {
-  linkArgs,
-  notesArg,
-  validateIdempotencyKey,
-  optionalLinkage,
-  timestampSeconds,
-} from "./validators.js";
+import { linkArgs, notesArg, optionalLinkage, timestampSeconds } from "./validators.js";
 import { readConfig, requireConfigValue } from "../shared/config.js";
 import { verifySubscriptionCheckout } from "../shared/crypto.js";
 
@@ -77,7 +71,7 @@ export const create = action({
   },
   returns: schema.doc("subscriptions"),
   handler: async (ctx, args): Promise<Doc<"subscriptions">> => {
-    validateIdempotencyKey(args.idempotencyKey);
+    if (args.idempotencyKey !== undefined) validateIdempotencyKey(args.idempotencyKey);
     const { testMode, isSimulated } = resolveProviderMode(args.testMode);
     if (
       !Number.isSafeInteger(args.totalCount) ||
@@ -167,6 +161,7 @@ export const create = action({
             offer_id: args.razorpayOfferId,
             notes,
           },
+          isDeduplicated: args.idempotencyKey !== undefined,
         });
       } catch (error) {
         if (args.idempotencyKey && isDefinitiveNoCreate(error)) {
@@ -218,7 +213,6 @@ export const fetch = action({
     const raw = await requestProvider(
       "GET",
       `/subscriptions/${encodeURIComponent(razorpaySubscriptionId)}`,
-      { idempotent: true },
     );
     if (parseProviderResponse(() => record(raw)).id !== razorpaySubscriptionId)
       throw razorpayError("RAZORPAY_INVALID_RESPONSE");
@@ -501,7 +495,6 @@ export const verifyCheckout = action({
       const subscription = await requestProvider(
         "GET",
         `/subscriptions/${encodeURIComponent(args.razorpaySubscriptionId)}`,
-        { idempotent: true },
       );
       if (record(subscription).id !== args.razorpaySubscriptionId)
         throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
@@ -513,7 +506,6 @@ export const verifyCheckout = action({
       const payment = await requestProvider(
         "GET",
         `/payments/${encodeURIComponent(args.razorpayPaymentId)}`,
-        { idempotent: true },
       );
       if (record(payment).id !== args.razorpayPaymentId)
         throw razorpayError("RAZORPAY_INVALID_ARGUMENT");

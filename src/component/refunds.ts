@@ -1,4 +1,5 @@
 import { parseProviderResponse } from "../shared/providerErrors.js";
+import { validateIdempotencyKey } from "../shared/bounds.js";
 import { refundFields } from "./mapping.js";
 import { razorpayError } from "../shared/errors.js";
 
@@ -10,13 +11,7 @@ import type { Doc } from "./_generated/dataModel.js";
 import { computeSha256Hex } from "../shared/crypto.js";
 import { assertModeMatches, requestProvider, resolveProviderMode } from "./provider.js";
 import { deterministicTestId, linkedNotes, record, stableStringify } from "../shared/validation.js";
-import {
-  linkArgs,
-  notesArg,
-  validateAmount,
-  validateIdempotencyKey,
-  validateReceipt,
-} from "./validators.js";
+import { linkArgs, notesArg, validateAmount, validateReceipt } from "./validators.js";
 import { optionalLinkage } from "./validators.js";
 
 export const create = action({
@@ -38,7 +33,7 @@ export const create = action({
     if (!idempotencyKey) {
       throw razorpayError("RAZORPAY_IDEMPOTENCY_REQUIRED");
     }
-    validateIdempotencyKey(args.idempotencyKey);
+    if (args.idempotencyKey !== undefined) validateIdempotencyKey(args.idempotencyKey);
     const notes = linkedNotes(args.notes, args.userId, args.externalId, args.metadata);
     const requestFingerprint = stableStringify({
       testMode,
@@ -85,9 +80,8 @@ export const create = action({
       `/payments/${encodeURIComponent(args.razorpayPaymentId)}/refund`,
       {
         body: { amount: args.amount, speed: args.speed, receipt: args.receipt, notes },
-        idempotent: true,
-        refund: true,
-        idempotencyKey: providerIdempotencyKey,
+        isDeduplicated: true,
+        refundIdempotencyKey: providerIdempotencyKey,
       },
     );
     if (parseProviderResponse(() => record(raw)).payment_id !== args.razorpayPaymentId)
@@ -120,9 +114,7 @@ export const fetch = action({
       const { _id, _creationTime, ...entity } = local;
       return entity;
     }
-    const raw = await requestProvider("GET", `/refunds/${encodeURIComponent(razorpayRefundId)}`, {
-      idempotent: true,
-    });
+    const raw = await requestProvider("GET", `/refunds/${encodeURIComponent(razorpayRefundId)}`);
     if (parseProviderResponse(() => record(raw)).id !== razorpayRefundId)
       throw razorpayError("RAZORPAY_INVALID_RESPONSE");
     return { ...refundFields(raw, Date.now()), testMode: mode.testMode };

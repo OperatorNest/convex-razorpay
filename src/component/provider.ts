@@ -1,4 +1,6 @@
 import { readConfig, requireConfigValue, resolveRazorpayTestMode } from "../shared/config.js";
+import { readBoundedText } from "../shared/bounds.js";
+import { maxProviderResponseBytes, providerTimeoutMs } from "../shared/constants.js";
 import { razorpayError } from "../shared/errors.js";
 import { classifyProviderError } from "../shared/providerErrors.js";
 import { env } from "./_generated/server.js";
@@ -28,45 +30,59 @@ export function assertModeMatches(row: { testMode: boolean }, testMode: boolean)
   }
 }
 
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+async function readProviderBody(response: Response): Promise<unknown> {
+  const text = await readBoundedText(response, maxProviderResponseBytes).catch(() => undefined);
+  const body = text === undefined ? undefined : parseJson(text);
+  if (body === undefined && response.ok) throw razorpayError("RAZORPAY_INVALID_RESPONSE");
+  return body;
+}
+
+/** Sends one Razorpay API request. `isDeduplicated` marks a non-GET call that cannot create a second provider effect when repeated; with GET it sets `retryable` on network and provider failures. */
 export async function requestProvider(
   method: "GET" | "POST" | "PUT" | "PATCH",
   path: string,
-  options: { body?: unknown; idempotent?: boolean; refund?: boolean; idempotencyKey?: string } = {},
+  options: { body?: unknown; isDeduplicated?: boolean; refundIdempotencyKey?: string } = {},
 ): Promise<unknown> {
   const config = readConfig(env);
   const keyId = requireConfigValue(config.keyId);
   const keySecret = requireConfigValue(config.keySecret);
+  const isRepeatSafe = method === "GET" || options.isDeduplicated === true;
   const headers: Record<string, string> = {
     Authorization: `Basic ${btoa(`${keyId}:${keySecret}`)}`,
   };
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
-  if (options.refund && options.idempotencyKey)
-    headers["X-Refund-Idempotency"] = options.idempotencyKey;
-  const init: RequestInit = { method, headers };
-  if (options.body !== undefined) init.body = JSON.stringify(options.body);
+  if (options.refundIdempotencyKey !== undefined)
+    headers["X-Refund-Idempotency"] = options.refundIdempotencyKey;
+  const requestBody = options.body === undefined ? undefined : JSON.stringify(options.body);
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10_000);
-  init.signal = controller.signal;
+  const init: RequestInit = { method, headers, redirect: "manual", signal: controller.signal };
+  if (requestBody !== undefined) init.body = requestBody;
+  const timeout = setTimeout(() => controller.abort(), providerTimeoutMs);
   let response: Response;
   let body: unknown;
   try {
     try {
       response = await fetch(`https://api.razorpay.com/v1${path}`, init);
     } catch {
-      throw razorpayError("RAZORPAY_NETWORK_ERROR", { retryable: true });
+      throw razorpayError("RAZORPAY_NETWORK_ERROR", { retryable: isRepeatSafe });
     }
-    try {
-      body = await response.json();
-    } catch {
-      if (response.ok) throw razorpayError("RAZORPAY_INVALID_RESPONSE");
-      body = undefined;
+    if (response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400)) {
+      await response.body?.cancel();
+      throw razorpayError("RAZORPAY_INVALID_RESPONSE");
     }
+    body = await readProviderBody(response);
   } finally {
     clearTimeout(timeout);
   }
-  if (!response.ok) {
-    throw classifyProviderError(response.status, body);
-  }
+  if (!response.ok) throw classifyProviderError(response.status, body, isRepeatSafe);
   return dropInvalidFieldNames(body);
 }
 
@@ -96,7 +112,6 @@ export async function findByIdempotencyKey(
     const response = await requestProvider(
       "GET",
       `${listPath(path, pageSize, page * pageSize)}${filter}`,
-      { idempotent: true },
     );
     const items = collectionItems(response);
     const found = items.find(

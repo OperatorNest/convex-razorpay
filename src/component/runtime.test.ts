@@ -36,7 +36,7 @@ afterEach(() => {
   restoreRazorpayTestState();
 });
 
-test("idempotency retention deletes old failed claims and preserves every completed or pending claim", async () => {
+test("idempotency claims are retained regardless of age or status", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-10-04T00:00:00Z"));
   const t = convexTest(schema, modules);
@@ -505,7 +505,7 @@ test("scheduled cleanup removes only webhook events older than the retention win
       bodyHash: "hash",
     });
   });
-  expect(await t.mutation(internal.webhooks.cleanupScheduled, {})).toBe(3);
+  expect(await t.mutation(internal.cleanup.run, {})).toBe(3);
   expect(
     (await t.run((ctx) => ctx.db.query("webhookEvents").take(10))).map((row) => row.eventId),
   ).toEqual(["evt_new"]);
@@ -516,7 +516,7 @@ test("scheduled cleanup schedules further batches until every expired event is r
   const t = setupTest();
   const expiredAt = Date.now() - 40 * 86400_000;
   await t.run(async (ctx) => {
-    for (let index = 0; index < 45; index++)
+    for (let index = 0; index < 205; index++)
       await ctx.db.insert("webhookEvents", {
         eventId: `evt_expired_${index}`,
         event: "payment.captured",
@@ -526,7 +526,7 @@ test("scheduled cleanup schedules further batches until every expired event is r
         bodyHash: "hash",
       });
   });
-  expect(await t.mutation(internal.webhooks.cleanupScheduled, {})).toBe(20);
+  expect(await t.mutation(internal.cleanup.run, {})).toBe(100);
   await drain(t);
   expect(await t.run((ctx) => ctx.db.query("webhookEvents").take(10))).toEqual([]);
 });
@@ -544,7 +544,7 @@ test("scheduled cleanup clamps a later cutoff to the retention window", async ()
       bodyHash: "cleanup-guard",
     }),
   );
-  expect(await t.mutation(internal.webhooks.cleanupScheduled, { before: now + 60_000 })).toBe(0);
+  expect(await t.mutation(internal.cleanup.run, { before: now + 60_000 })).toBe(0);
   expect(await t.run((ctx) => ctx.db.get("webhookEvents", eventId))).not.toBeNull();
 });
 
@@ -726,4 +726,54 @@ test("subscription checkout signature links a provider payment without subscript
     razorpaySubscriptionId: "sub_ID6MOhgkcoHjE7",
     captured: false,
   });
+});
+
+test("config.get reports the effective mode and which secrets are set without returning any secret", async () => {
+  stubRazorpayEnv({
+    keyId: "rzp_test_public",
+    keySecret: "fixture_secret",
+    webhookSecret: webhookFixture,
+    testMode: "true",
+  });
+  const t = convexTest(schema, modules);
+  const summary = await t.query(api.config.get, {});
+  expect(summary).toEqual({
+    testMode: true,
+    isSimulated: false,
+    keyId: "rzp_test_public",
+    hasKeySecret: true,
+    hasWebhookSecret: true,
+    hasPreviousWebhookSecret: false,
+  });
+  expect(JSON.stringify(summary)).not.toContain("fixture_secret");
+  stubRazorpayEnv({ previousWebhookSecret: webhookFixture, testMode: "true" });
+  expect(await t.query(api.config.get, {})).toEqual({
+    testMode: true,
+    isSimulated: true,
+    keyId: null,
+    hasKeySecret: false,
+    hasWebhookSecret: false,
+    hasPreviousWebhookSecret: true,
+  });
+  stubRazorpayEnv({});
+  expect(await t.query(api.config.get, {})).toMatchObject({ testMode: false, isSimulated: false });
+  expect(await t.query(api.config.get, { testMode: true })).toMatchObject({
+    testMode: true,
+    isSimulated: true,
+  });
+});
+
+test("webhook ingest rejects a callback handle that is not a function handle", async () => {
+  stubRazorpayEnv({ webhookSecret: webhookFixture });
+  const t = convexTest(schema, modules);
+  const body = "{}";
+  await expectRazorpayError(
+    t.action(api.webhooks.ingest, {
+      body,
+      signature: await computeHmacSha256Hex(webhookFixture, body),
+      eventId: "evt_invalid_handle",
+      callbackHandle: "not-a-handle",
+    }),
+    "RAZORPAY_INVALID_ARGUMENT",
+  );
 });

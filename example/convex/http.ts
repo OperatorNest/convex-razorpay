@@ -1,12 +1,63 @@
-import { registerRoutes } from "@operatornest/convex-razorpay";
+import { Razorpay } from "@operatornest/convex-razorpay";
 import { httpRouter } from "convex/server";
 import { components, internal } from "./_generated/api.js";
 import { env, httpAction } from "./_generated/server.js";
 
 const http = httpRouter();
-registerRoutes(http, components.razorpay, { onEvent: internal.webhookCallback.onEvent });
+new Razorpay(components.razorpay, { onEvent: internal.webhookCallback.onEvent }).registerRoutes(
+  http,
+);
 
 const maxE2eBodyBytes = 128 * 1024;
+
+async function readChunkBefore(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  deadline: number,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      reader.read(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("End-to-end webhook body read timed out")),
+          Math.max(1, deadline - Date.now()),
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function readBodyBytes(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  deadline: number,
+  chunks: Uint8Array[],
+): Promise<Uint8Array<ArrayBuffer> | "timeout" | "too-large"> {
+  let next: ReadableStreamReadResult<Uint8Array>;
+  try {
+    next = await readChunkBefore(reader, deadline);
+  } catch {
+    void reader.cancel();
+    return "timeout";
+  }
+  const length = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+  if (next.done) {
+    const body = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) {
+      body.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return body;
+  }
+  if (length + next.value.byteLength > maxE2eBodyBytes) {
+    void reader.cancel();
+    return "too-large";
+  }
+  return readBodyBytes(reader, deadline, [...chunks, next.value]);
+}
 
 http.route({
   path: "/razorpay/e2e/webhook",
@@ -16,46 +67,10 @@ http.route({
     if (!recorderUrl) return new Response("Not found", { status: 404 });
 
     const deadline = Date.now() + 4_500;
-    let length = 0;
-    const chunks: Uint8Array[] = [];
     const reader = request.body?.getReader();
-    if (reader) {
-      while (true) {
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        let next: ReadableStreamReadResult<Uint8Array>;
-        try {
-          // eslint-disable-next-line eslint/no-await-in-loop -- Stream reads must be sequential to enforce the size bound before retaining chunks.
-          next = await Promise.race([
-            reader.read(),
-            new Promise<never>((_resolve, reject) => {
-              timer = setTimeout(
-                () => reject(new Error("End-to-end webhook body read timed out")),
-                Math.max(1, deadline - Date.now()),
-              );
-            }),
-          ]);
-        } catch {
-          void reader.cancel();
-          return new Response("Webhook body read timed out", { status: 504 });
-        } finally {
-          if (timer) clearTimeout(timer);
-        }
-        const { done, value } = next;
-        if (done) break;
-        length += value.byteLength;
-        if (length > maxE2eBodyBytes) {
-          void reader.cancel();
-          return new Response("Payload too large", { status: 413 });
-        }
-        chunks.push(value);
-      }
-    }
-    const body = new Uint8Array(length);
-    let offset = 0;
-    for (const chunk of chunks) {
-      body.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
+    const body = reader ? await readBodyBytes(reader, deadline, []) : new Uint8Array();
+    if (body === "timeout") return new Response("Webhook body read timed out", { status: 504 });
+    if (body === "too-large") return new Response("Payload too large", { status: 413 });
 
     const providerHeaders = new Headers();
     for (const name of ["content-type", "x-razorpay-signature", "x-razorpay-event-id"]) {

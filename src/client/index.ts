@@ -26,6 +26,7 @@ import { isRazorpayError } from "../shared/errors.js";
 import { validateNotes } from "../shared/validation.js";
 
 import { maxWebhookBodyBytes } from "../shared/constants.js";
+import { readBoundedText } from "../shared/bounds.js";
 
 export { RAZORPAY_ERROR_CODES, isRazorpayError } from "../shared/errors.js";
 export type { RazorpayErrorCode, RazorpayErrorData } from "../shared/errors.js";
@@ -627,6 +628,13 @@ export class Razorpay {
       }),
   };
 
+  /** Reads the effective component configuration with secrets omitted. */
+  readonly config = {
+    /** Returns test mode, whether calls are simulated, the public key ID and which secrets are set; throws `RAZORPAY_NOT_CONFIGURED` for a malformed env value. */
+    get: (ctx: QueryContext) =>
+      ctx.runQuery(this.component.config.get, { testMode: this.options.testMode }),
+  };
+
   /** Verifies Razorpay payment link callback signatures. */
   readonly paymentLinks = {
     /** Verifies a payment link callback signature. */
@@ -645,11 +653,41 @@ export class Razorpay {
     },
   };
 
-  /** Registers the signed Razorpay webhook route and optional event callback. */
-  registerRoutes(http: HttpRouter, options: RegisterRoutesOptions = {}) {
-    return registerRoutes(http, this.component, {
-      path: options.path,
-      onEvent: options.onEvent ?? this.options.onEvent,
+  /** Registers an HTTP route that verifies and applies signed Razorpay webhook events in the mode the component env selects, ignoring the client `testMode` option. `options.onEvent` replaces the constructor's `onEvent`. */
+  registerRoutes(http: HttpRouter, options: RegisterRoutesOptions = {}): void {
+    const { component } = this;
+    const onEvent = options.onEvent ?? this.options.onEvent;
+    http.route({
+      path: options.path ?? "/razorpay/webhook",
+      method: "POST",
+      handler: httpActionGeneric(async (ctx, request) => {
+        let body: string | undefined;
+        try {
+          body = await readBoundedText(request, maxWebhookBodyBytes);
+        } catch {
+          return new Response("Webhook unavailable", { status: 500 });
+        }
+        if (body === undefined)
+          return new Response("Webhook body exceeds limit or is not UTF-8", { status: 400 });
+        const signature = request.headers.get("x-razorpay-signature") ?? "";
+        const eventId = request.headers.get("x-razorpay-event-id") ?? "";
+        try {
+          const callbackHandle = onEvent ? await createFunctionHandle(onEvent) : undefined;
+          await ctx.runAction(component.webhooks.ingest, {
+            body,
+            signature,
+            eventId,
+            callbackHandle,
+          });
+        } catch (error) {
+          const badRequest =
+            isRazorpayError(error) && error.data.code === "RAZORPAY_INVALID_WEBHOOK_SIGNATURE";
+          return new Response(badRequest ? "Invalid webhook" : "Webhook unavailable", {
+            status: badRequest ? 401 : 500,
+          });
+        }
+        return new Response(null, { status: 200 });
+      }),
     });
   }
 }
@@ -659,79 +697,3 @@ export type RegisterRoutesOptions = {
   path?: `/${string}`;
   onEvent?: EventCallback;
 };
-
-class WebhookBodyTooLarge extends Error {}
-class WebhookBodyUndecodable extends Error {}
-
-async function readWebhookBody(request: Request): Promise<string> {
-  if (!request.body) return "";
-  const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let length = 0;
-  async function readChunk(): Promise<void> {
-    const { done, value } = await reader.read();
-    if (done) return;
-    length += value.byteLength;
-    if (length > maxWebhookBodyBytes) {
-      void reader.cancel();
-      throw new WebhookBodyTooLarge();
-    }
-    chunks.push(value);
-    await readChunk();
-  }
-  await readChunk();
-  const bytes = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  try {
-    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
-  } catch {
-    throw new WebhookBodyUndecodable();
-  }
-}
-
-/** Registers an HTTP route that verifies and applies signed Razorpay webhook events in the mode the component env selects, ignoring any client `testMode` option. */
-export function registerRoutes(
-  http: HttpRouter,
-  component: ComponentApi,
-  { path = "/razorpay/webhook", onEvent }: RegisterRoutesOptions = {},
-) {
-  http.route({
-    path,
-    method: "POST",
-    handler: httpActionGeneric(async (ctx, request) => {
-      let body: string;
-      try {
-        body = await readWebhookBody(request);
-      } catch (error) {
-        if (error instanceof WebhookBodyTooLarge)
-          return new Response("Webhook body too large", { status: 413 });
-        if (error instanceof WebhookBodyUndecodable)
-          return new Response("Invalid webhook body", { status: 400 });
-        return new Response("Webhook unavailable", { status: 500 });
-      }
-      const signature = request.headers.get("x-razorpay-signature") ?? "";
-      const eventId = request.headers.get("x-razorpay-event-id") ?? "";
-      try {
-        const callbackHandle = onEvent ? await createFunctionHandle(onEvent) : undefined;
-        const ingestArgs = {
-          body,
-          signature,
-          eventId,
-          callbackHandle,
-        };
-        await ctx.runAction(component.webhooks.ingest, ingestArgs);
-      } catch (error) {
-        const badRequest =
-          isRazorpayError(error) && error.data.code === "RAZORPAY_INVALID_WEBHOOK_SIGNATURE";
-        return new Response(badRequest ? "Invalid webhook" : "Webhook unavailable", {
-          status: badRequest ? 401 : 500,
-        });
-      }
-      return new Response(null, { status: 200 });
-    }),
-  });
-}

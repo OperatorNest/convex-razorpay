@@ -462,7 +462,7 @@ test("refund creation derives its provider key from receipt and rejects keyless 
       speed: "normal",
       razorpayPaymentId: "pay_refund_target",
       amount: 100,
-      idempotencyKey: "short-key",
+      idempotencyKey: "key:with-colon",
     }),
     "RAZORPAY_INVALID_ARGUMENT",
   );
@@ -742,12 +742,16 @@ describe("idempotency", () => {
   });
 
   test("provider errors expose fixed messages without descriptions", () => {
-    const a = classifyProviderError(400, {
-      error: { code: "BAD_REQUEST_ERROR", description: "private value" },
-    });
-    const b = classifyProviderError(400, {
-      error: { code: "BAD_REQUEST_ERROR", description: "other value" },
-    });
+    const a = classifyProviderError(
+      400,
+      { error: { code: "BAD_REQUEST_ERROR", description: "private value" } },
+      false,
+    );
+    const b = classifyProviderError(
+      400,
+      { error: { code: "BAD_REQUEST_ERROR", description: "other value" } },
+      false,
+    );
     expect(a.data.message).toBe(b.data.message);
     expect(a.data).toMatchObject({ providerStatus: 400, providerCode: "BAD_REQUEST_ERROR" });
   });

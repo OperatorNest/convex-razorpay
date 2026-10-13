@@ -1,17 +1,12 @@
 import { createHmac, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
-import { runSmoke, step } from "./smoke-harness.mjs";
+import { anyApi } from "convex/server";
+import { assertSmoke, errorCodeOf, runSmoke, step, waitFor } from "./smoke-harness.mjs";
 
 const ENVIRONMENT_TIMEOUT_MS = 30_000;
-const POLL_INTERVAL_MS = 250;
 
 const hmac = (secret, text) => createHmac("sha256", secret).update(text).digest("hex");
-
-function assertSmoke(condition, detail = "assertion failed") {
-  if (!condition) throw new Error(detail);
-}
 
 const envelope = (id, payment) =>
   JSON.stringify({
@@ -36,7 +31,7 @@ function readSiteUrl(workspace) {
   return `http://127.0.0.1:${config.ports.site}`;
 }
 
-await runSmoke(async ({ workspace, runFunction, setEnvironmentVariable }) => {
+await runSmoke(async ({ client, workspace, runFunction, setEnvironmentVariable }) => {
   const webhookSecret = randomBytes(24).toString("hex");
   const keySecret = randomBytes(24).toString("hex");
   const runId = randomBytes(6).toString("hex");
@@ -44,27 +39,45 @@ await runSmoke(async ({ workspace, runFunction, setEnvironmentVariable }) => {
   const runComponent = (name, args) => runFunction(name, args, { component: "razorpay" });
   const readState = (razorpayOrderId) => runFunction("smoke:state", { userId, razorpayOrderId });
   const countFor = (eventId) => runFunction("smoke:notificationCount", { eventId });
+  const createKeyedOrder = (idempotencyKey) =>
+    client.action(anyApi.smoke.createKeyedOrder, { idempotencyKey });
   const sign = (body) => ({
     "content-type": "application/json",
     "x-razorpay-signature": hmac(webhookSecret, body),
   });
 
-  await step("component environment simulates test mode without a key ID", async () => {
+  await step("config.get reports simulated test mode with secrets omitted", async () => {
     await setEnvironmentVariable("RAZORPAY_TEST_MODE", "true");
     await setEnvironmentVariable("RAZORPAY_KEY_SECRET", keySecret);
     await setEnvironmentVariable("RAZORPAY_WEBHOOK_SECRET", webhookSecret);
-    const deadline = Date.now() + ENVIRONMENT_TIMEOUT_MS;
-    for (;;) {
-      const status = await runFunction("smoke:environment");
-      if (
-        status.testMode === true &&
-        status.keyIdConfigured === false &&
-        status.keySecretConfigured === true
-      )
-        return;
-      assertSmoke(Date.now() < deadline, `environment not loaded: ${JSON.stringify(status)}`);
-      await sleep(POLL_INTERVAL_MS);
-    }
+    const summary = await waitFor(
+      async () => {
+        const config = await runFunction("smoke:config");
+        return config.hasKeySecret && config.hasWebhookSecret ? config : undefined;
+      },
+      { timeoutMs: ENVIRONMENT_TIMEOUT_MS },
+    );
+    const expected = {
+      testMode: true,
+      isSimulated: true,
+      keyId: null,
+      hasKeySecret: true,
+      hasWebhookSecret: true,
+      hasPreviousWebhookSecret: false,
+    };
+    assertSmoke(
+      Object.keys(summary).length === Object.keys(expected).length &&
+        Object.entries(expected).every(([key, value]) => summary[key] === value),
+      JSON.stringify(summary),
+    );
+    assertSmoke(!JSON.stringify(summary).includes(keySecret), "config.get returned a secret");
+  });
+
+  await step("idempotency keys accept 1 to 128 of A-Z a-z 0-9 _ - and reject others", async () => {
+    const orderId = await createKeyedOrder(`k${runId.slice(0, 1)}`);
+    assertSmoke(orderId.startsWith("order_"), orderId);
+    const code = await createKeyedOrder("key:colon").then(() => "accepted", errorCodeOf);
+    assertSmoke(code === "RAZORPAY_INVALID_ARGUMENT", String(code));
   });
 
   const setup = await runFunction("smoke:setup", { userId, runId });
@@ -144,14 +157,14 @@ await runSmoke(async ({ workspace, runFunction, setEnvironmentVariable }) => {
     assertSmoke((await countFor(badId)) === 0);
   });
 
-  await step("an oversized body returns 413 without a callback", async () => {
+  await step("an oversized body returns 400 without a callback", async () => {
     const oversizedId = `evt_${runId}_oversized`;
     const oversized = "x".repeat(200_000);
     const status = await postWebhook(hook, oversized, {
       ...sign(oversized),
       "x-razorpay-event-id": oversizedId,
     });
-    assertSmoke(status === 413, `status ${status}`);
+    assertSmoke(status === 400, `status ${status}`);
     assertSmoke((await countFor(oversizedId)) === 0);
   });
 
@@ -282,7 +295,7 @@ await runSmoke(async ({ workspace, runFunction, setEnvironmentVariable }) => {
   });
 
   await step("cleanup clamps to the retention window and preserves recent events", async () => {
-    const removedCount = await runComponent("webhooks:cleanupScheduled", { before: Date.now() });
+    const removedCount = await runComponent("cleanup:run", { before: Date.now() });
     assertSmoke(removedCount === 0, `removed ${removedCount}`);
   });
 

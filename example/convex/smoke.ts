@@ -7,18 +7,23 @@ const razorpay = new Razorpay(components.razorpay, {
   testMode: env.RAZORPAY_TEST_MODE === "true",
 });
 
-export const environment = internalQuery({
+export const config = internalQuery({
   args: {},
-  returns: v.object({
-    testMode: v.boolean(),
-    keyIdConfigured: v.boolean(),
-    keySecretConfigured: v.boolean(),
-  }),
-  handler: () => ({
-    testMode: env.RAZORPAY_TEST_MODE === "true",
-    keyIdConfigured: Boolean(env.RAZORPAY_KEY_ID),
-    keySecretConfigured: Boolean(env.RAZORPAY_KEY_SECRET),
-  }),
+  handler: (ctx) => razorpay.config.get(ctx),
+});
+
+export const createKeyedOrder = internalAction({
+  args: { idempotencyKey: v.string() },
+  returns: v.string(),
+  handler: async (ctx, { idempotencyKey }) =>
+    (
+      await razorpay.orders.create(ctx, {
+        partialPayment: false,
+        amount: 100,
+        currency: "INR",
+        idempotencyKey,
+      })
+    ).razorpayOrderId,
 });
 
 export const notificationCount = internalQuery({

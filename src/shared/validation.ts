@@ -1,4 +1,5 @@
 import { computeSha256Hex } from "./crypto.js";
+import { boundedString } from "./bounds.js";
 import { razorpayError } from "./errors.js";
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -13,9 +14,8 @@ export function record(value: unknown): Record<string, unknown> {
 }
 
 export function stringField(value: unknown): string {
-  if (typeof value !== "string" || value.length === 0 || value.length > 4096 || !wellFormed(value))
-    throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
-  return value;
+  if (typeof value !== "string") throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
+  return boundedString(value, 4096);
 }
 
 export function integerField(value: unknown, min = 0): number {
@@ -32,7 +32,7 @@ export function validateNotes(notes: Record<string, string> | undefined): Record
     entries.length > 15 ||
     entries.some(
       ([key, value]) =>
-        !isConvexFieldName(key) || key.length > 256 || value.length > 256 || !wellFormed(value),
+        !isConvexFieldName(key) || key.length > 256 || value.length > 256 || !value.isWellFormed(),
     )
   ) {
     throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
@@ -154,15 +154,8 @@ export function dropInvalidFieldNames(value: unknown): unknown {
   return value;
 }
 
-export function boundedString(value: string, max: number): void {
-  if (!value || value.length > max || !wellFormed(value))
-    throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
-}
 export function boundedLimit(limit = 50): number {
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
     throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
   return limit;
-}
-export function wellFormed(value: string): boolean {
-  return !/[\uD800-\uDFFF]/u.test(value);
 }

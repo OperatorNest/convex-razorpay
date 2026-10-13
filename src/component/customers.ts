@@ -24,7 +24,8 @@ import {
   stableStringify,
   validateNotes,
 } from "../shared/validation.js";
-import { linkArgs, notesArg, validateIdempotencyKey } from "./validators.js";
+import { validateIdempotencyKey } from "../shared/bounds.js";
+import { linkArgs, notesArg } from "./validators.js";
 import { optionalLinkage } from "./validators.js";
 
 const idempotencyNote = "operatornestIdempotencyKey";
@@ -145,7 +146,7 @@ async function createCustomer(
   const mode = resolveProviderMode(args.testMode);
   const { testMode } = mode;
   validateCustomer(args.name, args.email, args.contact);
-  validateIdempotencyKey(args.idempotencyKey);
+  if (args.idempotencyKey !== undefined) validateIdempotencyKey(args.idempotencyKey);
   if (args.gstin && !/^[0-9A-Z]{15}$/.test(args.gstin))
     throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
   const idempotencyKey = args.idempotencyKey;
@@ -251,6 +252,7 @@ async function createCustomer(
             notes,
             fail_existing: getOrCreate ? "0" : "1",
           },
+          isDeduplicated: idempotencyKey !== undefined,
         });
       } catch (error) {
         await failClaim(error);
@@ -306,9 +308,6 @@ export const fetch = action({
     const raw = await requestProvider(
       "GET",
       `/customers/${encodeURIComponent(razorpayCustomerId)}`,
-      {
-        idempotent: true,
-      },
     );
     if (parseProviderResponse(() => record(raw)).id !== razorpayCustomerId)
       throw razorpayError("RAZORPAY_INVALID_RESPONSE");

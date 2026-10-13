@@ -459,7 +459,35 @@ test("HTTP route bounds a large body before signature processing", async () => {
     body: "x".repeat(128 * 1024 + 1),
     headers: { "x-razorpay-event-id": "evt_large", "x-razorpay-signature": "0".repeat(64) },
   });
-  expect(response.status).toBe(413);
+  expect(response.status).toBe(400);
+});
+
+test("HTTP route verifies a signed body that starts with a UTF-8 BOM", async () => {
+  vi.stubEnv("RAZORPAY_WEBHOOK_SECRET", "whsec_test_secret_123");
+  const t = convexTest(schema, modules);
+  register(t);
+  const body = `\ufeff${JSON.stringify({ event: "payment.captured", payload: {} })}`;
+  const response = await t.fetch("/razorpay/webhook", {
+    method: "POST",
+    body: new TextEncoder().encode(body),
+    headers: {
+      "x-razorpay-event-id": "evt_bom",
+      "x-razorpay-signature": await computeHmacSha256Hex("whsec_test_secret_123", body),
+    },
+  });
+  expect(response.status).toBe(200);
+});
+
+test("HTTP route answers 400 for a body that is not UTF-8", async () => {
+  vi.stubEnv("RAZORPAY_WEBHOOK_SECRET", "whsec_test_secret_123");
+  const t = convexTest(schema, modules);
+  register(t);
+  const response = await t.fetch("/razorpay/webhook", {
+    method: "POST",
+    body: new Uint8Array([0x7b, 0xff, 0x7d]),
+    headers: { "x-razorpay-event-id": "evt_undecodable", "x-razorpay-signature": "0".repeat(64) },
+  });
+  expect(response.status).toBe(400);
 });
 
 test("e2e webhook recorder route is disabled unless the harness supplies a capability URL", async () => {

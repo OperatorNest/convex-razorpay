@@ -46,13 +46,6 @@ export function validateReceipt(receipt: string | undefined): void {
     throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
 }
 
-export function validateIdempotencyKey(key?: string): void {
-  if (key === undefined) return;
-  if (!/^[A-Za-z0-9_-]{10,128}$/.test(key)) {
-    throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
-  }
-}
-
 export function optionalLinkage(link: {
   userId?: string | undefined;
   externalId?: string | undefined;

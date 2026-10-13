@@ -23,6 +23,22 @@ import type { FunctionReference } from "convex/server";
  */
 export type ComponentApi<Name extends string | undefined = string | undefined> =
   {
+    config: {
+      get: FunctionReference<
+        "query",
+        "internal",
+        { testMode?: boolean },
+        {
+          hasKeySecret: boolean;
+          hasPreviousWebhookSecret: boolean;
+          hasWebhookSecret: boolean;
+          isSimulated: boolean;
+          keyId: string | null;
+          testMode: boolean;
+        },
+        Name
+      >;
+    };
     customers: {
       create: FunctionReference<
         "action",

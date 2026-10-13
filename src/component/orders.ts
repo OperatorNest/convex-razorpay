@@ -1,4 +1,5 @@
 import { parseProviderResponse } from "../shared/providerErrors.js";
+import { validateIdempotencyKey } from "../shared/bounds.js";
 import { paymentFields } from "./mapping.js";
 import { orderFields } from "./mapping.js";
 import schema from "./schema.js";
@@ -31,7 +32,6 @@ import {
   notesArg,
   validateAmount,
   validateCurrency,
-  validateIdempotencyKey,
   validateReceipt,
   optionalLinkage,
 } from "./validators.js";
@@ -59,9 +59,7 @@ async function recoverDuplicateReceipt(
   if (!isRazorpayError(error) || error.data.providerStatus !== 400 || !receipt || !idempotencyKey)
     return null;
   const found = collectionItems(
-    await requestProvider("GET", `/orders?receipt=${encodeURIComponent(receipt)}&count=1`, {
-      idempotent: true,
-    }),
+    await requestProvider("GET", `/orders?receipt=${encodeURIComponent(receipt)}&count=1`),
   );
   if (found.length !== 1) return null;
   const recovered = record(found[0]);
@@ -93,7 +91,7 @@ export const create = action({
     const { testMode, isSimulated } = resolveProviderMode(args.testMode);
     validateAmount(args.amount);
     validateCurrency(args.currency);
-    validateIdempotencyKey(args.idempotencyKey);
+    if (args.idempotencyKey !== undefined) validateIdempotencyKey(args.idempotencyKey);
     validateReceipt(args.receipt);
     const idempotencyKey = args.idempotencyKey;
 
@@ -176,6 +174,7 @@ export const create = action({
               notes,
               partial_payment: args.partialPayment,
             },
+            isDeduplicated: idempotencyKey !== undefined,
           });
         } catch (error) {
           let recovered: unknown;
@@ -235,9 +234,7 @@ export const fetch = action({
       const { _id, _creationTime, ...entity } = local;
       return entity;
     }
-    const raw = await requestProvider("GET", `/orders/${encodeURIComponent(razorpayOrderId)}`, {
-      idempotent: true,
-    });
+    const raw = await requestProvider("GET", `/orders/${encodeURIComponent(razorpayOrderId)}`);
     if (parseProviderResponse(() => record(raw)).id !== razorpayOrderId)
       throw razorpayError("RAZORPAY_INVALID_RESPONSE");
     return { ...orderFields(raw, Date.now()), testMode: mode.testMode };
@@ -262,9 +259,7 @@ export const fetchPayments = action({
       return local.map(({ _id, _creationTime, ...entity }) => entity);
     }
     const items = collectionItems(
-      await requestProvider("GET", `/orders/${encodeURIComponent(razorpayOrderId)}/payments`, {
-        idempotent: true,
-      }),
+      await requestProvider("GET", `/orders/${encodeURIComponent(razorpayOrderId)}/payments`),
     );
     for (const raw of items)
       if (parseProviderResponse(() => record(raw)).order_id !== razorpayOrderId)
@@ -334,7 +329,6 @@ export const verifyCheckout = action({
       const payment = await requestProvider(
         "GET",
         `/payments/${encodeURIComponent(args.razorpayPaymentId)}`,
-        { idempotent: true },
       );
       if (
         record(payment).id !== args.razorpayPaymentId ||

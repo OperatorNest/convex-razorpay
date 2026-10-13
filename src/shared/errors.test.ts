@@ -12,7 +12,7 @@ import {
 test("error factories select one fixed message per code", () => {
   expect(razorpayError("RAZORPAY_INVALID_ARGUMENT").data).toEqual({
     code: "RAZORPAY_INVALID_ARGUMENT",
-    message: "An argument is invalid, missing or out of bounds.",
+    message: "An argument is missing, malformed or out of bounds.",
   });
   expect(isRazorpayError(razorpayError("RAZORPAY_NOT_FOUND"))).toBe(true);
   expect(
@@ -49,33 +49,39 @@ test("the error guard validates every public field and rejects undeclared fields
 test.each([400, 401, 404, 409, 429, 500, 503])(
   "HTTP %i classifies outcome without exposing provider descriptions",
   (status) => {
-    const error = classifyProviderError(status, {
-      error: { code: "PROVIDER_CODE", description: "private account value" },
-    });
+    const isDefinitive = status < 500 && ![409, 429].includes(status);
+    const body = { error: { code: "PROVIDER_CODE", description: "private account value" } };
+    const error = classifyProviderError(status, body, false);
     expect(error.data).toEqual({
       code: "RAZORPAY_PROVIDER_ERROR",
       message: "Razorpay returned a failure response.",
-      retryable: status >= 500 || [409, 429].includes(status),
+      retryable: isDefinitive,
       providerStatus: status,
       providerCode: "PROVIDER_CODE",
     });
-    expect(isDefinitiveNoCreate(error)).toBe(status < 500 && ![409, 429].includes(status));
+    expect(isDefinitiveNoCreate(error)).toBe(isDefinitive);
+    const repeatSafe = classifyProviderError(status, body, true);
+    expect(repeatSafe.data.retryable).toBe(true);
+    expect(isDefinitiveNoCreate(repeatSafe)).toBe(isDefinitive);
   },
 );
 
 test("provider classification handles absent fields, concurrency and Unicode boundaries", async () => {
-  expect(classifyProviderError(503, null).data).toEqual({
+  expect(classifyProviderError(503, null, true).data).toEqual({
     code: "RAZORPAY_PROVIDER_ERROR",
     message: "Razorpay returned a failure response.",
     retryable: true,
     providerStatus: 503,
   });
+  const concurrent = classifyProviderError(
+    400,
+    { error: { description: "Concurrent operation in progress" } },
+    false,
+  );
+  expect(concurrent.data.retryable).toBe(false);
+  expect(isDefinitiveNoCreate(razorpayError("RAZORPAY_NOT_FOUND"))).toBe(false);
   expect(
-    classifyProviderError(400, { error: { description: "Concurrent operation in progress" } }).data
-      .retryable,
-  ).toBe(true);
-  expect(
-    classifyProviderError(503, { error: { code: "x".repeat(63) + "😀" } }).data.providerCode,
+    classifyProviderError(503, { error: { code: "x".repeat(63) + "😀" } }, true).data.providerCode,
   ).toBe("x".repeat(63));
   expect(providerErrorCode(new Error("unknown"))).toBe("RAZORPAY_PROVIDER_ERROR");
   expect(providerErrorCode(razorpayError("RAZORPAY_NOT_FOUND"))).toBe("RAZORPAY_NOT_FOUND");

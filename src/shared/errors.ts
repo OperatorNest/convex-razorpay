@@ -29,7 +29,7 @@ const RAZORPAY_PROVIDER_ERROR_CODES = [
 ] as const satisfies readonly RazorpayErrorCode[];
 
 const RAZORPAY_ERROR_MESSAGES = {
-  RAZORPAY_INVALID_ARGUMENT: "An argument is invalid, missing or out of bounds.",
+  RAZORPAY_INVALID_ARGUMENT: "An argument is missing, malformed or out of bounds.",
   RAZORPAY_INVALID_RESPONSE: "The provider response is invalid or a required mirror is missing.",
   RAZORPAY_NOT_CONFIGURED: "Razorpay component configuration is missing or invalid.",
   RAZORPAY_LIVE_KEY_TEST_MODE: "Test mode cannot use a live Razorpay key.",
@@ -42,8 +42,8 @@ const RAZORPAY_ERROR_MESSAGES = {
     "The create outcome is pending or unknown; reconcile before retrying.",
   RAZORPAY_NOT_FOUND: "The required mirror does not exist.",
   RAZORPAY_PROVIDER_ERROR: "Razorpay returned a failure response.",
-  RAZORPAY_NETWORK_ERROR: "The Razorpay network request failed with an uncertain outcome.",
-  RAZORPAY_INVALID_WEBHOOK_SIGNATURE: "The webhook signature is invalid.",
+  RAZORPAY_NETWORK_ERROR: "The request to Razorpay failed before a response arrived.",
+  RAZORPAY_INVALID_WEBHOOK_SIGNATURE: "The webhook signature is missing or wrong.",
   RAZORPAY_INVALID_PAYMENT_SIGNATURE: "The Checkout payment signature is invalid.",
   RAZORPAY_STALE_WEBHOOK: "The webhook event is older than the deduplication retention window.",
   RAZORPAY_MALFORMED_WEBHOOK: "The webhook body or envelope is invalid or exceeds the size limit.",
@@ -66,6 +66,7 @@ export type RazorpayErrorCode = (typeof RAZORPAY_ERROR_CODES)[number];
 export type RazorpayErrorData = {
   code: RazorpayErrorCode;
   message: string;
+  /** `true` only when repeating the identical call cannot create a second provider effect: the call is a read, the call carries an idempotency key the component or provider deduplicates, or the provider definitively refused without effect. */
   retryable?: boolean;
   providerStatus?: number;
   providerCode?: string;

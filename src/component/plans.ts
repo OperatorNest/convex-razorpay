@@ -1,4 +1,5 @@
 import { parseProviderResponse } from "../shared/providerErrors.js";
+import { boundedString, validateIdempotencyKey } from "../shared/bounds.js";
 import { planFields } from "./mapping.js";
 import schema from "./schema.js";
 import type { Doc } from "./_generated/dataModel.js";
@@ -16,7 +17,6 @@ import {
   resolveProviderMode,
 } from "./provider.js";
 import {
-  boundedString,
   deterministicTestId,
   linkedNotes,
   omitUndefined,
@@ -30,7 +30,6 @@ import {
   pageArgs,
   validateAmount,
   validateCurrency,
-  validateIdempotencyKey,
   validatePage,
   optionalLinkage,
 } from "./validators.js";
@@ -58,7 +57,7 @@ export const create = action({
   },
   returns: schema.doc("plans"),
   handler: async (ctx, args): Promise<Doc<"plans">> => {
-    validateIdempotencyKey(args.idempotencyKey);
+    if (args.idempotencyKey !== undefined) validateIdempotencyKey(args.idempotencyKey);
     if (!Number.isSafeInteger(args.interval) || args.interval < (args.period === "daily" ? 7 : 1))
       throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     validateAmount(args.item.amount);
@@ -119,6 +118,7 @@ export const create = action({
         try {
           raw = await requestProvider("POST", "/plans", {
             body: { period: args.period, interval: args.interval, item: args.item, notes },
+            isDeduplicated: args.idempotencyKey !== undefined,
           });
         } catch (error) {
           if (args.idempotencyKey && isDefinitiveNoCreate(error)) {
@@ -165,9 +165,7 @@ export const fetch = action({
       const { _id, _creationTime, ...entity } = local;
       return entity;
     }
-    const raw = await requestProvider("GET", `/plans/${encodeURIComponent(razorpayPlanId)}`, {
-      idempotent: true,
-    });
+    const raw = await requestProvider("GET", `/plans/${encodeURIComponent(razorpayPlanId)}`);
     if (parseProviderResponse(() => record(raw)).id !== razorpayPlanId)
       throw razorpayError("RAZORPAY_INVALID_RESPONSE");
     return { ...planFields(raw, Date.now()), testMode: mode.testMode };
@@ -184,9 +182,7 @@ export const fetchAll = action({
       return (await ctx.runQuery(internal.lookup.plansPage, { count, skip, testMode: true })).map(
         ({ _id, _creationTime, ...entity }) => entity,
       );
-    const items = collectionItems(
-      await requestProvider("GET", listPath("/plans", count, skip), { idempotent: true }),
-    );
+    const items = collectionItems(await requestProvider("GET", listPath("/plans", count, skip)));
     return items.map((raw) =>
       Object.assign(planFields(raw, Date.now()), { testMode: mode.testMode }),
     );

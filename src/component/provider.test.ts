@@ -36,84 +36,103 @@ test("REST helper uses platform fetch, Basic auth, and JSON body", async () => {
   expect(JSON.parse(init.body)).toEqual({ amount: 50000, currency: "INR" });
 });
 
-test("refund idempotency key goes to X-Refund-Idempotency", async () => {
+test("refund idempotency key goes to X-Refund-Idempotency and redirects are not followed", async () => {
   const calls = stubFetch(() => new Response(JSON.stringify({ id: "rfnd_1" }), { status: 200 }));
   await requestProvider("POST", "/payments/pay_1/refund", {
     body: { amount: 100 },
-    refund: true,
-    idempotencyKey: "refund-key-123",
+    isDeduplicated: true,
+    refundIdempotencyKey: "refund-key-123",
   });
   const { init } = required(calls[0], "fetch call");
   expect(init.headers).toMatchObject({ "X-Refund-Idempotency": "refund-key-123" });
+  expect(init.redirect).toBe("manual");
+  expect(init.signal).toBeInstanceOf(AbortSignal);
 });
 
-const providerFailure = async (
+const providerFailure = (
   method: "GET" | "POST",
   status: number,
-  idempotent: boolean,
-  refund = false,
+  isDeduplicated: boolean,
+  description = "Provider unavailable",
 ) => {
   vi.stubGlobal(
     "fetch",
     vi.fn(
       async () =>
-        new Response(
-          JSON.stringify({
-            error: { code: "SERVER_ERROR", description: "Provider unavailable" },
-          }),
-          { status },
-        ),
+        new Response(JSON.stringify({ error: { code: "SERVER_ERROR", description } }), {
+          status,
+        }),
     ),
   );
-  try {
-    await requestProvider(method, "/resource", { idempotent, refund });
-    throw new Error("Expected request failure");
-  } catch (error) {
-    return error;
-  }
+  return requestProvider(method, "/resource", { isDeduplicated });
 };
 
-test("GET and POST failures expose status and uncertain outcomes", async () => {
-  const get500 = await providerFailure("GET", 500, true);
-  expect(get500).toMatchObject({ data: { code: "RAZORPAY_PROVIDER_ERROR" } });
-  const post500 = await providerFailure("POST", 500, false);
-  expect(post500).toMatchObject({ data: { code: "RAZORPAY_PROVIDER_ERROR" } });
-  const get429 = await providerFailure("GET", 429, true);
-  expect(get429).toMatchObject({ data: { code: "RAZORPAY_PROVIDER_ERROR" } });
+test("retryable is true only for reads, deduplicated calls and definitive refusals", async () => {
+  const cases: [
+    method: "GET" | "POST",
+    status: number,
+    isDeduplicated: boolean,
+    retryable: boolean,
+  ][] = [
+    ["GET", 500, false, true],
+    ["GET", 429, false, true],
+    ["POST", 500, true, true],
+    ["POST", 409, true, true],
+    ["POST", 500, false, false],
+    ["POST", 409, false, false],
+    ["POST", 429, false, false],
+    ["POST", 400, false, true],
+  ];
+  for (const [method, status, isDeduplicated, retryable] of cases)
+    await expectRazorpayErrorDetails(
+      providerFailure(method, status, isDeduplicated),
+      "RAZORPAY_PROVIDER_ERROR",
+      { retryable, providerStatus: status },
+    );
+  await expectRazorpayErrorDetails(
+    providerFailure("POST", 400, false, "Concurrent operation in progress"),
+    "RAZORPAY_PROVIDER_ERROR",
+    { retryable: false, providerStatus: 400 },
+  );
   vi.stubGlobal(
     "fetch",
     vi.fn(async () => {
       throw new Error("network down");
     }),
   );
-  await expectRazorpayError(
-    requestProvider("GET", "/resource", { idempotent: true }),
-    "RAZORPAY_NETWORK_ERROR",
-  );
-  await expectRazorpayError(
-    requestProvider("POST", "/resource", { idempotent: false }),
-    "RAZORPAY_NETWORK_ERROR",
-  );
+  for (const [method, isDeduplicated, retryable] of [
+    ["GET", false, true],
+    ["POST", true, true],
+    ["POST", false, false],
+  ] as const)
+    await expectRazorpayErrorDetails(
+      requestProvider(method, "/resource", { isDeduplicated }),
+      "RAZORPAY_NETWORK_ERROR",
+      { retryable },
+    );
 });
 
-test("refund conflicts expose status without a retry recommendation", async () => {
-  expect(await providerFailure("POST", 409, true, true)).toMatchObject({
-    data: { code: "RAZORPAY_PROVIDER_ERROR" },
-  });
-  expect(await providerFailure("POST", 409, false, true)).toMatchObject({
-    data: { code: "RAZORPAY_PROVIDER_ERROR" },
-  });
-});
-
-test("malformed provider JSON has a structured error", async () => {
+test("redirects, oversized bodies and malformed provider JSON are invalid responses", async () => {
+  for (const response of [
+    new Response(null, { status: 302, headers: { location: "https://example.test" } }),
+    new Response("not json", { status: 200 }),
+    new Response("{}", { status: 200, headers: { "content-length": String(4 * 1024 * 1024 + 1) } }),
+    new Response(new Uint8Array([0x7b, 0xff, 0x7d]), { status: 200 }),
+  ]) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => response),
+    );
+    await expectRazorpayError(requestProvider("GET", "/resource"), "RAZORPAY_INVALID_RESPONSE");
+  }
   vi.stubGlobal(
     "fetch",
-    vi.fn(async () => new Response("not json", { status: 200 })),
+    vi.fn(async () => new Response("<html>", { status: 502 })),
   );
-  await expectRazorpayError(
-    requestProvider("GET", "/resource", { idempotent: true }),
-    "RAZORPAY_INVALID_RESPONSE",
-  );
+  await expectRazorpayErrorDetails(requestProvider("GET", "/resource"), "RAZORPAY_PROVIDER_ERROR", {
+    retryable: true,
+    providerStatus: 502,
+  });
 });
 
 test("provider error fields never expose configured credentials", async () => {
@@ -202,16 +221,18 @@ test("request timer covers response parsing and is cleared on success or program
   vi.useFakeTimers();
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (_url: string, init: RequestInit) => ({
-      status: 200,
-      ok: true,
-      json: () =>
-        new Promise((_, reject) => {
-          init.signal?.addEventListener("abort", () => reject(new Error("aborted")), {
-            once: true,
-          });
-        }),
-    })),
+    vi.fn(
+      async (_url: string, init: RequestInit) =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              init.signal?.addEventListener("abort", () => controller.error(new Error("aborted")), {
+                once: true,
+              });
+            },
+          }),
+        ),
+    ),
   );
   const pending = expectRazorpayError(
     requestProvider("GET", "/resource"),

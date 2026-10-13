@@ -1,7 +1,7 @@
 import { readConfig, requireConfigValue } from "../shared/config.js";
 import { razorpayError, isRazorpayError } from "../shared/errors.js";
 
-import { maxWebhookBodyBytes, webhookRetentionDays } from "../shared/constants.js";
+import { dayMs, maxWebhookBodyBytes, webhookRetentionDays } from "../shared/constants.js";
 import { computeSha256Hex } from "../shared/crypto.js";
 import { v } from "convex/values";
 import type { Infer } from "convex/values";
@@ -19,7 +19,9 @@ import { webhookIngestResultValidator } from "../shared/validators.js";
 
 type IngestResult = Infer<typeof webhookIngestResultValidator>;
 
-const dayMs = 86_400_000;
+function isMutationHandle(handle: string): handle is FunctionHandle<"mutation"> {
+  return handle.startsWith("function://");
+}
 
 type Parsed = {
   event: string;
@@ -166,6 +168,8 @@ export const ingest = action({
   },
   returns: webhookIngestResultValidator,
   handler: async (ctx, args): Promise<IngestResult> => {
+    if (args.callbackHandle !== undefined && !isMutationHandle(args.callbackHandle))
+      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     if (!readConfig(env).webhookSecret) throw razorpayError("RAZORPAY_NOT_CONFIGURED");
     const current = await computeHmacSha256Hex(
       requireConfigValue(readConfig(env).webhookSecret),
@@ -339,7 +343,11 @@ export const apply = internalMutation({
       ...(errorCode === undefined ? {} : { errorCode }),
       bodyHash: args.bodyHash,
     });
-    if (status === "processed" && args.callbackHandle) {
+    if (
+      status === "processed" &&
+      args.callbackHandle !== undefined &&
+      isMutationHandle(args.callbackHandle)
+    ) {
       const event = {
         eventId: args.eventId,
         event: args.event,
@@ -349,9 +357,7 @@ export const apply = internalMutation({
           : { razorpayAccountId: args.razorpayAccountId }),
         providerCreatedAt: args.providerCreatedAt,
       };
-      // The app minted this opaque string with createFunctionHandle before calling ingest.
-      // eslint-disable-next-line typescript/no-unsafe-type-assertion -- Convex transports branded function handles as strings across component boundaries.
-      await ctx.runMutation(args.callbackHandle as FunctionHandle<"mutation">, event);
+      await ctx.runMutation(args.callbackHandle, event);
     }
     return {
       status,
@@ -370,24 +376,5 @@ export const apply = internalMutation({
           }
         : {}),
     };
-  },
-});
-
-const cleanupBatchSize = 20;
-
-export const cleanupScheduled = internalMutation({
-  args: { before: v.optional(v.number()) },
-  returns: v.number(),
-  handler: async (ctx, { before }): Promise<number> => {
-    const retentionCutoff = Date.now() - webhookRetentionDays * dayMs;
-    const cutoff = Math.min(before ?? retentionCutoff, retentionCutoff);
-    const rows = await ctx.db
-      .query("webhookEvents")
-      .withIndex("by_receivedAt", (q) => q.lt("receivedAt", cutoff))
-      .take(cleanupBatchSize);
-    for (const row of rows) await ctx.db.delete("webhookEvents", row._id);
-    if (rows.length === cleanupBatchSize)
-      await ctx.scheduler.runAfter(0, internal.webhooks.cleanupScheduled, { before: cutoff });
-    return rows.length;
   },
 });

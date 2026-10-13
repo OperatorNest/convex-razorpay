@@ -173,7 +173,7 @@ describe("payments", () => {
     await expectRazorpayErrorDetails(
       t.action(api.payments.capture, captureArgs),
       "RAZORPAY_PROVIDER_ERROR",
-      { providerStatus: 400, retryable: false },
+      { providerStatus: 400, retryable: true },
     );
     expect(fetch.mock.calls.map(([, init]) => init.method)).toEqual(["POST", "GET"]);
   });
