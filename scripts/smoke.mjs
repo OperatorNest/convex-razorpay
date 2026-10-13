@@ -180,7 +180,7 @@ await runSmoke(async ({ client, workspace, runFunction, setEnvironmentVariable }
     assertSmoke((await countFor(undecodableId)) === 0);
   });
 
-  await step("a signed malformed entity returns 200 without a callback", async () => {
+  await step("a signed malformed entity returns 500 without a callback", async () => {
     const malformedId = `evt_${runId}_malformed`;
     const malformed = envelope(`malformed-${runId}`, {
       id: `pay_${randomBytes(7).toString("hex")}`,
@@ -193,7 +193,7 @@ await runSmoke(async ({ client, workspace, runFunction, setEnvironmentVariable }
       ...sign(malformed),
       "x-razorpay-event-id": malformedId,
     });
-    assertSmoke(status === 200, `status ${status}`);
+    assertSmoke(status === 500, `status ${status}`);
     assertSmoke((await countFor(malformedId)) === 0);
   });
 

@@ -157,7 +157,7 @@ test("keyed getOrCreate refreshes a same-owner profile and preserves omitted con
   });
 });
 
-test("getOrCreate refuses an idempotent provider customer already linked to another user", async () => {
+test("getOrCreate isolates the same idempotency key for different users", async () => {
   const t = convexTest(schema, modules);
   register(t);
   const args = {
@@ -167,11 +167,19 @@ test("getOrCreate refuses an idempotent provider customer already linked to anot
     idempotencyKey: "customer-conflict-key",
     testMode: true,
   };
-  await t.action(components.razorpay.customers.getOrCreate, { ...args, userId: "user_a" });
-  await expectRazorpayError(
-    t.action(components.razorpay.customers.getOrCreate, { ...args, userId: "user_b" }),
-    "RAZORPAY_CUSTOMER_CONFLICT",
-  );
+  const alice = await t.action(components.razorpay.customers.getOrCreate, {
+    ...args,
+    userId: "user_a",
+  });
+  const bob = await t.action(components.razorpay.customers.getOrCreate, {
+    ...args,
+    userId: "user_b",
+  });
+  expect(bob._id).not.toBe(alice._id);
+  expect(bob.userId).toBe("user_b");
+  expect(
+    (await t.action(components.razorpay.customers.getOrCreate, { ...args, userId: "user_a" }))._id,
+  ).toBe(alice._id);
 });
 
 test("subscription.charged webhook links payment to its subscription and invoice", async () => {
@@ -434,7 +442,7 @@ test("HTTP route accepts the previous signing secret", async () => {
   expect(response.status).toBe(200);
 });
 
-test("HTTP route acknowledges and records a correctly signed malformed payload", async () => {
+test("HTTP route returns 500 for a correctly signed malformed payload", async () => {
   vi.stubEnv("RAZORPAY_WEBHOOK_SECRET", "whsec_test_secret_123");
   const t = convexTest(schema, modules);
   register(t);
@@ -447,7 +455,7 @@ test("HTTP route acknowledges and records a correctly signed malformed payload",
       "x-razorpay-signature": await computeHmacSha256Hex("whsec_test_secret_123", body),
     },
   });
-  expect(response.status).toBe(200);
+  expect(response.status).toBe(500);
 });
 
 test("HTTP route bounds a large body before signature processing", async () => {
@@ -475,7 +483,7 @@ test("HTTP route verifies a signed body that starts with a UTF-8 BOM", async () 
       "x-razorpay-signature": await computeHmacSha256Hex("whsec_test_secret_123", body),
     },
   });
-  expect(response.status).toBe(200);
+  expect(response.status).toBe(500);
 });
 
 test("HTTP route answers 400 for a body that is not UTF-8", async () => {

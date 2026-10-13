@@ -72,6 +72,19 @@ describe("payments", () => {
     },
   );
 
+  test("payments.list rejects a cursor one value longer than its index key at either boundary", async () => {
+    const t = harness();
+    const cursor = JSON.stringify(Array(5).fill(null));
+    for (const paginationOpts of [
+      { numItems: 1, cursor },
+      { numItems: 1, cursor: null, endCursor: cursor },
+    ])
+      await expectRazorpayError(
+        t.query(api.payments.list, { razorpayOrderId: "order_fixture", paginationOpts }),
+        "RAZORPAY_INVALID_ARGUMENT",
+      );
+  });
+
   test("stored payment pages continue without overlap and bound endCursor reads", async () => {
     const t = harness();
     for (let index = 0; index < 5; index++) {
@@ -173,7 +186,7 @@ describe("payments", () => {
     await expectRazorpayErrorDetails(
       t.action(api.payments.capture, captureArgs),
       "RAZORPAY_PROVIDER_ERROR",
-      { providerStatus: 400, retryable: true },
+      { providerStatus: 400, retryable: false },
     );
     expect(fetch.mock.calls.map(([, init]) => init.method)).toEqual(["POST", "GET"]);
   });

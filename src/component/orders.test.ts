@@ -550,16 +550,17 @@ describe("orders", () => {
         userId: "second",
       }),
       "RAZORPAY_PROVIDER_ERROR",
-      { providerStatus: 400, retryable: true },
+      { providerStatus: 400, retryable: false },
     );
     expect(
       await t.run((ctx) =>
         ctx.db
           .query("idempotencyRequests")
-          .withIndex("by_resource_and_testMode_and_idempotencyKey", (q) =>
+          .withIndex("by_resource_and_testMode_and_userId_and_idempotencyKey", (q) =>
             q
               .eq("resource", "order")
               .eq("testMode", true)
+              .eq("userId", "second")
               .eq("idempotencyKey", "fixture_receipt_second"),
           )
           .unique(),
@@ -569,6 +570,7 @@ describe("orders", () => {
       await t.mutation(internal.idempotency.release, {
         resource: "order",
         idempotencyKey: "fixture_receipt_second",
+        userId: "second",
         testMode: true,
       }),
     ).toBe(true);

@@ -27,6 +27,19 @@ describe("subscriptions", () => {
 
   afterEach(restoreRazorpayTestState);
 
+  test("subscriptions.list rejects a cursor one value longer than its index key at either boundary", async () => {
+    const t = harness();
+    const cursor = JSON.stringify(Array(6).fill(null));
+    for (const paginationOpts of [
+      { numItems: 1, cursor },
+      { numItems: 1, cursor: null, endCursor: cursor },
+    ])
+      await expectRazorpayError(
+        t.query(api.subscriptions.list, { userId: "owner", paginationOpts }),
+        "RAZORPAY_INVALID_ARGUMENT",
+      );
+  });
+
   test("stored subscription pages continue without overlap and bound endCursor reads", async () => {
     stubRazorpayEnv({ keySecret: "fixture_secret", webhookSecret: "fixture_webhook" });
     const t = harness();

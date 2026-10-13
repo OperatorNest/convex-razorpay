@@ -204,10 +204,11 @@ test("subscription mirror cannot regress paid count and settles its claim", asyn
   const claim = await t.run((ctx) =>
     ctx.db
       .query("idempotencyRequests")
-      .withIndex("by_resource_and_testMode_and_idempotencyKey", (q) =>
+      .withIndex("by_resource_and_testMode_and_userId_and_idempotencyKey", (q) =>
         q
           .eq("resource", "subscription")
           .eq("testMode", false)
+          .eq("userId", undefined)
           .eq("idempotencyKey", "subscription-key"),
       )
       .unique(),

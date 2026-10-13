@@ -45,7 +45,7 @@ async function readProviderBody(response: Response): Promise<unknown> {
   return body;
 }
 
-/** Sends one Razorpay API request. `isDeduplicated` marks a non-GET call that cannot create a second provider effect when repeated; with GET it sets `retryable` on network and provider failures. */
+/** Sends one Razorpay API request. `isDeduplicated` marks a non-GET call that cannot create a second provider effect when repeated; with GET it permits `retryable` only on transient network and provider failures. */
 export async function requestProvider(
   method: "GET" | "POST" | "PUT" | "PATCH",
   path: string,

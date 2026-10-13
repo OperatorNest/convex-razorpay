@@ -1,3 +1,4 @@
+import { scopedIdempotencyKey } from "../shared/validation.js";
 import schema from "./schema.js";
 import { afterEach, beforeEach, expect, test, describe, vi } from "vitest";
 import { convexTest } from "convex-test";
@@ -35,7 +36,6 @@ describe("customers", () => {
     { name: "Other Buyer" },
     { email: "other@example.test" },
     { contact: "+919000000000" },
-    { userId: "other" },
     { gstin: "1234567890ABCDE" },
     { notes: { sku: "other" } },
     { externalId: "other" },
@@ -49,13 +49,12 @@ describe("customers", () => {
     );
   });
 
-  test("getOrCreate rejects attaching ownership without a profile change", async () => {
+  test("getOrCreate keeps unscoped and user-scoped customer ownership separate", async () => {
     const t = harness();
     const first = await t.action(api.customers.create, customer);
-    await expectRazorpayError(
-      t.action(api.customers.getOrCreate, { ...customer, userId: "owner" }),
-      "RAZORPAY_CUSTOMER_CONFLICT",
-    );
+    const owned = await t.action(api.customers.getOrCreate, { ...customer, userId: "owner" });
+    expect(owned._id).not.toBe(first._id);
+    expect(owned.userId).toBe("owner");
     expect(
       await t.action(api.customers.fetch, {
         razorpayCustomerId: first.razorpayCustomerId,
@@ -84,7 +83,7 @@ describe("customers", () => {
     { stored: undefined, requested: "owner" },
     { stored: "owner", requested: undefined },
     { stored: "owner", requested: "other" },
-  ])("keyed getOrCreate requires exact owner equality %j", async ({ stored, requested }) => {
+  ])("keyed getOrCreate isolates different owners %j", async ({ stored, requested }) => {
     const t = harness();
     const args = {
       name: "Original Buyer",
@@ -96,15 +95,14 @@ describe("customers", () => {
       ...args,
       ...(stored === undefined ? {} : { userId: stored }),
     });
-    await expectRazorpayError(
-      t.action(api.customers.getOrCreate, {
-        ...args,
-        name: "Changed Buyer",
-        email: "changed@example.test",
-        ...(requested === undefined ? {} : { userId: requested }),
-      }),
-      "RAZORPAY_CUSTOMER_CONFLICT",
-    );
+    const second = await t.action(api.customers.getOrCreate, {
+      ...args,
+      name: "Changed Buyer",
+      email: "changed@example.test",
+      userId: requested,
+    });
+    expect(second._id).not.toBe(first._id);
+    expect(second.userId).toBe(requested);
     expect(
       await t.action(api.customers.fetch, {
         razorpayCustomerId: first.razorpayCustomerId,
@@ -124,7 +122,7 @@ describe("customers", () => {
     id: "cust_provider_fixture",
     name: keyedArgs.name,
     email: keyedArgs.email,
-    notes: { operatornestIdempotencyKey: keyedArgs.idempotencyKey },
+    notes: {},
     created_at: 1_567_674_599,
   };
 
@@ -149,7 +147,14 @@ describe("customers", () => {
     const requestBody = fetch.mock.calls[0]?.[1]?.body;
     if (typeof requestBody !== "string") throw new Error("Expected customer request body");
     expect(JSON.parse(requestBody)).toMatchObject({
-      notes: { operatornestIdempotencyKey: keyedArgs.idempotencyKey },
+      notes: {
+        operatornestIdempotencyKey: await scopedIdempotencyKey(
+          "customer",
+          keyedArgs.idempotencyKey,
+          true,
+          undefined,
+        ),
+      },
       fail_existing: "1",
     });
     expect(await readClaims(t)).toMatchObject([
@@ -173,7 +178,20 @@ describe("customers", () => {
         Response.json({
           entity: "collection",
           count: 2,
-          items: [{ id: "cust_other", notes: [] }, providerCustomer],
+          items: [
+            { id: "cust_other", notes: [] },
+            {
+              ...providerCustomer,
+              notes: {
+                operatornestIdempotencyKey: await scopedIdempotencyKey(
+                  "customer",
+                  keyedArgs.idempotencyKey,
+                  true,
+                  undefined,
+                ),
+              },
+            },
+          ],
         }),
       );
     vi.stubGlobal("fetch", fetch);

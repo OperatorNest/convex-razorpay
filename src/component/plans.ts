@@ -18,6 +18,7 @@ import {
 } from "./provider.js";
 import {
   deterministicTestId,
+  scopedIdempotencyKey,
   linkedNotes,
   omitUndefined,
   record,
@@ -65,9 +66,12 @@ export const create = action({
     boundedString(args.item.name, 256);
     if (args.item.description !== undefined) boundedString(args.item.description, 4096);
     const { testMode, isSimulated } = resolveProviderMode(args.testMode);
+    const providerKey = args.idempotencyKey
+      ? await scopedIdempotencyKey("plan", args.idempotencyKey, testMode, args.userId)
+      : undefined;
     const notes = validateNotes({
       ...linkedNotes(args.notes, args.userId, args.externalId, args.metadata),
-      ...(args.idempotencyKey ? { [idempotencyNote]: args.idempotencyKey } : {}),
+      ...(providerKey ? { [idempotencyNote]: providerKey } : {}),
     });
     const requestFingerprint = stableStringify({
       testMode,
@@ -79,6 +83,7 @@ export const create = action({
     let shouldReconcile = false;
     if (args.idempotencyKey) {
       const claim = await ctx.runMutation(internal.idempotency.claim, {
+        userId: args.userId,
         resource: "plan",
         idempotencyKey: args.idempotencyKey,
         requestFingerprint,
@@ -86,6 +91,7 @@ export const create = action({
       });
       if (claim === "completed") {
         const existing = await ctx.runQuery(internal.mutations.planByKey, {
+          userId: args.userId,
           idempotencyKey: args.idempotencyKey,
           testMode,
         });
@@ -99,7 +105,7 @@ export const create = action({
     if (isSimulated) {
       raw = {
         id: await deterministicTestId("plan", [
-          args.idempotencyKey ?? crypto.randomUUID(),
+          providerKey ?? crypto.randomUUID(),
           args.period,
           args.interval,
           args.item.amount,
@@ -112,8 +118,8 @@ export const create = action({
         created_at: Math.floor(Date.now() / 1000),
       };
     } else {
-      if (shouldReconcile && args.idempotencyKey) {
-        raw = await findByIdempotencyKey("plan", args.idempotencyKey);
+      if (shouldReconcile && providerKey) {
+        raw = await findByIdempotencyKey("plan", providerKey);
       } else {
         try {
           raw = await requestProvider("POST", "/plans", {
@@ -123,6 +129,7 @@ export const create = action({
         } catch (error) {
           if (args.idempotencyKey && isDefinitiveNoCreate(error)) {
             await ctx.runMutation(internal.idempotency.fail, {
+              userId: args.userId,
               resource: "plan",
               idempotencyKey: args.idempotencyKey,
               requestFingerprint,
@@ -190,10 +197,15 @@ export const fetchAll = action({
 });
 
 export const releaseIdempotency = mutation({
-  args: { idempotencyKey: v.string(), testMode: v.optional(v.boolean()) },
+  args: {
+    idempotencyKey: v.string(),
+    userId: v.optional(v.string()),
+    testMode: v.optional(v.boolean()),
+  },
   returns: v.boolean(),
   handler: (ctx, args): Promise<boolean> =>
     ctx.runMutation(internal.idempotency.release, {
+      userId: args.userId,
       resource: "plan",
       idempotencyKey: args.idempotencyKey,
       testMode: args.testMode,

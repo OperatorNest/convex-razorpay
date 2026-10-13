@@ -12,6 +12,7 @@ const resourceValidator = schema.tables.idempotencyRequests.validator.fields.res
 export const claim = internalMutation({
   args: {
     resource: resourceValidator,
+    userId: v.optional(v.string()),
     idempotencyKey: v.string(),
     requestFingerprint: v.string(),
     testMode: v.boolean(),
@@ -20,10 +21,11 @@ export const claim = internalMutation({
   handler: async (ctx, args) => {
     const existing = await ctx.db
       .query("idempotencyRequests")
-      .withIndex("by_resource_and_testMode_and_idempotencyKey", (q) =>
+      .withIndex("by_resource_and_testMode_and_userId_and_idempotencyKey", (q) =>
         q
           .eq("resource", args.resource)
           .eq("testMode", args.testMode)
+          .eq("userId", args.userId)
           .eq("idempotencyKey", args.idempotencyKey),
       )
       .unique();
@@ -48,6 +50,7 @@ export const claim = internalMutation({
     }
     await ctx.db.insert("idempotencyRequests", {
       resource: args.resource,
+      userId: args.userId,
       testMode: args.testMode,
       idempotencyKey: args.idempotencyKey,
       requestFingerprint: args.requestFingerprint,
@@ -61,6 +64,7 @@ export const claim = internalMutation({
 export const fail = internalMutation({
   args: {
     resource: resourceValidator,
+    userId: v.optional(v.string()),
     testMode: v.boolean(),
     idempotencyKey: v.string(),
     requestFingerprint: v.string(),
@@ -70,10 +74,11 @@ export const fail = internalMutation({
   handler: async (ctx, args) => {
     const existingClaim = await ctx.db
       .query("idempotencyRequests")
-      .withIndex("by_resource_and_testMode_and_idempotencyKey", (q) =>
+      .withIndex("by_resource_and_testMode_and_userId_and_idempotencyKey", (q) =>
         q
           .eq("resource", args.resource)
           .eq("testMode", args.testMode)
+          .eq("userId", args.userId)
           .eq("idempotencyKey", args.idempotencyKey),
       )
       .unique();
@@ -94,6 +99,7 @@ export const fail = internalMutation({
 export const release = internalMutation({
   args: {
     resource: resourceValidator,
+    userId: v.optional(v.string()),
     idempotencyKey: v.string(),
     testMode: v.optional(v.boolean()),
   },
@@ -101,10 +107,11 @@ export const release = internalMutation({
   handler: async (ctx, args) => {
     const existingClaim = await ctx.db
       .query("idempotencyRequests")
-      .withIndex("by_resource_and_testMode_and_idempotencyKey", (q) =>
+      .withIndex("by_resource_and_testMode_and_userId_and_idempotencyKey", (q) =>
         q
           .eq("resource", args.resource)
           .eq("testMode", readTestMode(args.testMode))
+          .eq("userId", args.userId)
           .eq("idempotencyKey", args.idempotencyKey),
       )
       .unique();
@@ -117,6 +124,7 @@ export const release = internalMutation({
 export const findClaimedEntityId = internalQuery({
   args: {
     resource: resourceValidator,
+    userId: v.optional(v.string()),
     idempotencyKey: v.string(),
     testMode: v.boolean(),
   },
@@ -124,10 +132,11 @@ export const findClaimedEntityId = internalQuery({
   handler: async (ctx, args) => {
     const existingClaim = await ctx.db
       .query("idempotencyRequests")
-      .withIndex("by_resource_and_testMode_and_idempotencyKey", (q) =>
+      .withIndex("by_resource_and_testMode_and_userId_and_idempotencyKey", (q) =>
         q
           .eq("resource", args.resource)
           .eq("testMode", args.testMode)
+          .eq("userId", args.userId)
           .eq("idempotencyKey", args.idempotencyKey),
       )
       .unique();

@@ -194,7 +194,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       releaseIdempotency: FunctionReference<
         "mutation",
         "internal",
-        { idempotencyKey: string; testMode?: boolean },
+        { idempotencyKey: string; testMode?: boolean; userId?: string },
         boolean,
         Name
       >;
@@ -350,7 +350,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       releaseIdempotency: FunctionReference<
         "mutation",
         "internal",
-        { idempotencyKey: string; testMode?: boolean },
+        { idempotencyKey: string; testMode?: boolean; userId?: string },
         boolean,
         Name
       >;
@@ -725,7 +725,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       releaseIdempotency: FunctionReference<
         "mutation",
         "internal",
-        { idempotencyKey: string; testMode?: boolean },
+        { idempotencyKey: string; testMode?: boolean; userId?: string },
         boolean,
         Name
       >;
@@ -754,6 +754,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           currency: string;
           externalId?: string;
           idempotencyKey?: string;
+          idempotencyUserId?: string;
           metadata?: Record<string, string>;
           notes: Record<string, string>;
           providerUpdatedAt: number;
@@ -781,6 +782,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           currency: string;
           externalId?: string;
           idempotencyKey?: string;
+          idempotencyUserId?: string;
           metadata?: Record<string, string>;
           notes: Record<string, string>;
           providerUpdatedAt: number;
@@ -1197,7 +1199,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       releaseIdempotency: FunctionReference<
         "mutation",
         "internal",
-        { idempotencyKey: string; testMode?: boolean },
+        { idempotencyKey: string; testMode?: boolean; userId?: string },
         boolean,
         Name
       >;

@@ -39,7 +39,7 @@ export default defineSchema({
     .index("by_razorpayOrderId", ["razorpayOrderId"])
     .index("by_testMode_and_razorpayOrderId", ["testMode", "razorpayOrderId"])
     .index("by_testMode_and_receipt", ["testMode", "receipt"])
-    .index("by_idempotencyKey_and_testMode", ["idempotencyKey", "testMode"]),
+    .index("by_idempotencyKey_and_testMode_and_userId", ["idempotencyKey", "testMode", "userId"]),
   payments: defineTable({
     razorpayPaymentId: v.string(),
     razorpayOrderId: v.optional(v.string()),
@@ -87,6 +87,7 @@ export default defineSchema({
     speedProcessed: v.optional(v.string()),
     receipt: v.optional(v.string()),
     notes,
+    idempotencyUserId: v.optional(v.string()),
     idempotencyKey: v.optional(v.string()),
     requestFingerprint: v.optional(v.string()),
     createdAt: v.number(),
@@ -98,7 +99,11 @@ export default defineSchema({
     testMode: v.boolean(),
   })
     .index("by_razorpayRefundId", ["razorpayRefundId"])
-    .index("by_idempotencyKey_and_testMode", ["idempotencyKey", "testMode"]),
+    .index("by_idempotencyKey_and_testMode_and_idempotencyUserId", [
+      "idempotencyKey",
+      "testMode",
+      "idempotencyUserId",
+    ]),
   customers: defineTable({
     razorpayCustomerId: v.string(),
     name: v.optional(v.string()),
@@ -116,7 +121,7 @@ export default defineSchema({
   })
     .index("by_razorpayCustomerId", ["razorpayCustomerId"])
     .index("by_userId_and_testMode", ["userId", "testMode"])
-    .index("by_idempotencyKey_and_testMode", ["idempotencyKey", "testMode"]),
+    .index("by_idempotencyKey_and_testMode_and_userId", ["idempotencyKey", "testMode", "userId"]),
   plans: defineTable({
     razorpayPlanId: v.string(),
     period: v.string(),
@@ -134,7 +139,7 @@ export default defineSchema({
     testMode: v.boolean(),
   })
     .index("by_razorpayPlanId", ["razorpayPlanId"])
-    .index("by_idempotencyKey_and_testMode", ["idempotencyKey", "testMode"])
+    .index("by_idempotencyKey_and_testMode_and_userId", ["idempotencyKey", "testMode", "userId"])
     .index("by_testMode", ["testMode"]),
   subscriptions: defineTable({
     razorpaySubscriptionId: v.string(),
@@ -170,7 +175,7 @@ export default defineSchema({
 
     .index("by_userId_and_testMode_and_createdAt", ["userId", "testMode", "createdAt"])
     .index("by_userId_and_testMode_and_status", ["userId", "testMode", "status"])
-    .index("by_idempotencyKey_and_testMode", ["idempotencyKey", "testMode"]),
+    .index("by_idempotencyKey_and_testMode_and_userId", ["idempotencyKey", "testMode", "userId"]),
   webhookEvents: defineTable({
     eventId: v.string(),
     event: v.string(),
@@ -186,6 +191,7 @@ export default defineSchema({
     .index("by_bodyHash", ["bodyHash"])
     .index("by_receivedAt", ["receivedAt"]),
   idempotencyRequests: defineTable({
+    userId: v.optional(v.string()),
     resource: v.union(
       v.literal("order"),
       v.literal("plan"),
@@ -201,9 +207,10 @@ export default defineSchema({
     createdAt: v.number(),
     settledAt: v.optional(v.number()),
   })
-    .index("by_resource_and_testMode_and_idempotencyKey", [
+    .index("by_resource_and_testMode_and_userId_and_idempotencyKey", [
       "resource",
       "testMode",
+      "userId",
       "idempotencyKey",
     ])
     .index("by_status_and_settledAt", ["status", "settledAt"]),

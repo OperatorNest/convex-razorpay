@@ -18,6 +18,7 @@ import {
 } from "./provider.js";
 import {
   deterministicTestId,
+  scopedIdempotencyKey,
   linkedNotes,
   omitUndefined,
   record,
@@ -150,9 +151,12 @@ async function createCustomer(
   if (args.gstin && !/^[0-9A-Z]{15}$/.test(args.gstin))
     throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
   const idempotencyKey = args.idempotencyKey;
+  const providerKey = idempotencyKey
+    ? await scopedIdempotencyKey("customer", idempotencyKey, testMode, args.userId)
+    : undefined;
   const notes = validateNotes({
     ...linkedNotes(args.notes, args.userId, args.externalId, args.metadata),
-    ...(idempotencyKey ? { [idempotencyNote]: idempotencyKey } : {}),
+    ...(providerKey ? { [idempotencyNote]: providerKey } : {}),
   });
   const requestFingerprint = stableStringify({
     testMode,
@@ -166,12 +170,13 @@ async function createCustomer(
     metadata: args.metadata,
   });
   const existing = idempotencyKey
-    ? await ctx.runQuery(internal.mutations.customerByKey, { idempotencyKey, testMode })
+    ? await ctx.runQuery(internal.mutations.customerByKey, {
+        idempotencyKey,
+        testMode,
+        userId: args.userId,
+      })
     : null;
   if (existing) {
-    if (getOrCreate && existing.userId !== args.userId) {
-      throw razorpayError("RAZORPAY_CUSTOMER_CONFLICT");
-    }
     if (getOrCreate && args.userId) {
       return refreshCustomerProfile(ctx, existing, args, mode);
     }
@@ -191,6 +196,7 @@ async function createCustomer(
   let shouldReconcile = false;
   if (idempotencyKey) {
     const claim = await ctx.runMutation(internal.idempotency.claim, {
+      userId: args.userId,
       resource: "customer",
       idempotencyKey,
       requestFingerprint,
@@ -198,6 +204,7 @@ async function createCustomer(
     });
     if (claim === "completed") {
       const razorpayCustomerId = await ctx.runQuery(internal.idempotency.findClaimedEntityId, {
+        userId: args.userId,
         resource: "customer",
         idempotencyKey,
         testMode,
@@ -219,6 +226,7 @@ async function createCustomer(
         (isRazorpayError(error) && error.data.code === "RAZORPAY_CUSTOMER_CONFLICT"))
     )
       await ctx.runMutation(internal.idempotency.fail, {
+        userId: args.userId,
         resource: "customer",
         idempotencyKey,
         requestFingerprint,
@@ -229,7 +237,7 @@ async function createCustomer(
   let raw: unknown;
   if (mode.isSimulated) {
     raw = {
-      id: await deterministicTestId("cust", [idempotencyKey ?? crypto.randomUUID(), args.contact]),
+      id: await deterministicTestId("cust", [providerKey ?? crypto.randomUUID(), args.contact]),
       entity: "customer",
       name: args.name,
       email: args.email,
@@ -239,8 +247,8 @@ async function createCustomer(
       created_at: Math.floor(Date.now() / 1000),
     };
   } else {
-    if (shouldReconcile && idempotencyKey) {
-      raw = await findByIdempotencyKey("customer", idempotencyKey);
+    if (shouldReconcile && providerKey) {
+      raw = await findByIdempotencyKey("customer", providerKey);
     } else {
       try {
         raw = await requestProvider("POST", "/customers", {
@@ -376,10 +384,15 @@ export const get = query({
 });
 
 export const releaseIdempotency = mutation({
-  args: { idempotencyKey: v.string(), testMode: v.optional(v.boolean()) },
+  args: {
+    idempotencyKey: v.string(),
+    userId: v.optional(v.string()),
+    testMode: v.optional(v.boolean()),
+  },
   returns: v.boolean(),
   handler: (ctx, args): Promise<boolean> =>
     ctx.runMutation(internal.idempotency.release, {
+      userId: args.userId,
       resource: "customer",
       idempotencyKey: args.idempotencyKey,
       testMode: args.testMode,

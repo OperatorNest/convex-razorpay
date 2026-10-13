@@ -54,8 +54,11 @@ export const putTestRefund = internalMutation({
     if (args.idempotencyKey) {
       const existing = await ctx.db
         .query("refunds")
-        .withIndex("by_idempotencyKey_and_testMode", (q) =>
-          q.eq("idempotencyKey", args.idempotencyKey).eq("testMode", true),
+        .withIndex("by_idempotencyKey_and_testMode_and_idempotencyUserId", (q) =>
+          q
+            .eq("idempotencyKey", args.idempotencyKey)
+            .eq("testMode", true)
+            .eq("idempotencyUserId", args.userId),
         )
         .first();
       if (existing) {
@@ -162,35 +165,38 @@ export const markVerified = internalMutation({
 });
 
 export const orderByKey = internalQuery({
-  args: { idempotencyKey: v.string(), testMode: v.boolean() },
+  args: { idempotencyKey: v.string(), testMode: v.boolean(), userId: v.optional(v.string()) },
   returns: v.union(schema.doc("orders"), v.null()),
-  handler: (ctx, { idempotencyKey, testMode }) =>
+  handler: (ctx, { idempotencyKey, testMode, userId }) =>
     ctx.db
       .query("orders")
-      .withIndex("by_idempotencyKey_and_testMode", (q) =>
-        q.eq("idempotencyKey", idempotencyKey).eq("testMode", testMode),
+      .withIndex("by_idempotencyKey_and_testMode_and_userId", (q) =>
+        q.eq("idempotencyKey", idempotencyKey).eq("testMode", testMode).eq("userId", userId),
       )
       .first(),
 });
 export const refundByKey = internalQuery({
-  args: { idempotencyKey: v.string(), testMode: v.boolean() },
+  args: { idempotencyKey: v.string(), testMode: v.boolean(), userId: v.optional(v.string()) },
   returns: v.union(schema.doc("refunds"), v.null()),
-  handler: (ctx, { idempotencyKey, testMode }) =>
+  handler: (ctx, { idempotencyKey, testMode, userId }) =>
     ctx.db
       .query("refunds")
-      .withIndex("by_idempotencyKey_and_testMode", (q) =>
-        q.eq("idempotencyKey", idempotencyKey).eq("testMode", testMode),
+      .withIndex("by_idempotencyKey_and_testMode_and_idempotencyUserId", (q) =>
+        q
+          .eq("idempotencyKey", idempotencyKey)
+          .eq("testMode", testMode)
+          .eq("idempotencyUserId", userId),
       )
       .first(),
 });
 export const customerByKey = internalQuery({
-  args: { idempotencyKey: v.string(), testMode: v.boolean() },
+  args: { idempotencyKey: v.string(), testMode: v.boolean(), userId: v.optional(v.string()) },
   returns: v.union(schema.doc("customers"), v.null()),
-  handler: (ctx, { idempotencyKey, testMode }) =>
+  handler: (ctx, { idempotencyKey, testMode, userId }) =>
     ctx.db
       .query("customers")
-      .withIndex("by_idempotencyKey_and_testMode", (q) =>
-        q.eq("idempotencyKey", idempotencyKey).eq("testMode", testMode),
+      .withIndex("by_idempotencyKey_and_testMode_and_userId", (q) =>
+        q.eq("idempotencyKey", idempotencyKey).eq("testMode", testMode).eq("userId", userId),
       )
       .first(),
 });
@@ -204,24 +210,24 @@ export const customerByUser = internalQuery({
       .first(),
 });
 export const planByKey = internalQuery({
-  args: { idempotencyKey: v.string(), testMode: v.boolean() },
+  args: { idempotencyKey: v.string(), testMode: v.boolean(), userId: v.optional(v.string()) },
   returns: v.union(schema.doc("plans"), v.null()),
-  handler: (ctx, { idempotencyKey, testMode }) =>
+  handler: (ctx, { idempotencyKey, testMode, userId }) =>
     ctx.db
       .query("plans")
-      .withIndex("by_idempotencyKey_and_testMode", (q) =>
-        q.eq("idempotencyKey", idempotencyKey).eq("testMode", testMode),
+      .withIndex("by_idempotencyKey_and_testMode_and_userId", (q) =>
+        q.eq("idempotencyKey", idempotencyKey).eq("testMode", testMode).eq("userId", userId),
       )
       .first(),
 });
 export const subscriptionByKey = internalQuery({
-  args: { idempotencyKey: v.string(), testMode: v.boolean() },
+  args: { idempotencyKey: v.string(), testMode: v.boolean(), userId: v.optional(v.string()) },
   returns: v.union(schema.doc("subscriptions"), v.null()),
-  handler: (ctx, { idempotencyKey, testMode }) =>
+  handler: (ctx, { idempotencyKey, testMode, userId }) =>
     ctx.db
       .query("subscriptions")
-      .withIndex("by_idempotencyKey_and_testMode", (q) =>
-        q.eq("idempotencyKey", idempotencyKey).eq("testMode", testMode),
+      .withIndex("by_idempotencyKey_and_testMode_and_userId", (q) =>
+        q.eq("idempotencyKey", idempotencyKey).eq("testMode", testMode).eq("userId", userId),
       )
       .first(),
 });

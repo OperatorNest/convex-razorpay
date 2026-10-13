@@ -11,7 +11,7 @@
 - Keyed customer creates claim the key, send the `operatornestIdempotencyKey` note and reconcile by listing provider customers.
 - Subscription provider operation responses cannot revive a terminal status or lower paidCount.
 - A capture 4xx returns the payment when a fetch shows it captured with the requested amount and currency.
-- A simulated duplicate receipt is a definitive refusal: it is retryable and leaves the keyed claim failed.
+- A simulated duplicate receipt is a definitive refusal: it is not retryable and leaves the keyed claim failed.
 - The package exports `webhookEventValidator` for app webhook callback args.
 - Breaking: `isRazorpayError` rejects `RAZORPAY_PROVIDER_ERROR` and `RAZORPAY_NETWORK_ERROR` data without a boolean `retryable`.
 - The package exports the `QueryContext`, `MutationContext` and `ActionContext` types that client methods accept.
@@ -24,10 +24,15 @@
 - A subscription stored with status `unknown` advances to any known status.
 - A capture 4xx whose reconcile fetch fails rethrows the capture error instead of the fetch error.
 - Refund request fingerprints include testMode and serialize fields in stable key order.
-- Breaking: `retryable` is `true` only when repeating the identical call cannot create a second provider effect: a read, a call carrying an idempotency key the component or Razorpay deduplicates (keyed order, customer, plan and subscription creates, every refund, payment capture), or a Razorpay 4xx refusal other than 409 or 429. An unkeyed create, a customer edit and a subscription cancel, pause, resume or update that fail without a response raise `RAZORPAY_NETWORK_ERROR` with `retryable: false`.
+- Breaking: `retryable` requires both a transient failure (network failure, timeout, 408, 429 or 5xx) and repeat safety (a read, a deduplicated key, 429 or a failure before sending). Every other 4xx and uncertain unkeyed creates, customer edits and subscription changes have `retryable: false`. A create timeout with status 408 leaves its claim pending.
 - Breaking: the free `registerRoutes(http, component, options)` export is removed; register the webhook route with `client.registerRoutes(http, options)`.
 - Breaking: the webhook route answers 400 instead of 413 for a body over 131072 bytes.
 - Breaking: idempotency keys accept 1 to 128 characters; the minimum length of 10 is removed.
 - Breaking: the `RAZORPAY_INVALID_ARGUMENT`, `RAZORPAY_NETWORK_ERROR` and `RAZORPAY_INVALID_WEBHOOK_SIGNATURE` messages change to "An argument is missing, malformed or out of bounds.", "The request to Razorpay failed before a response arrived." and "The webhook signature is missing or wrong.".
 - Breaking: provider requests do not follow redirects; a redirect, or a success response over 4194304 bytes or not well-formed UTF-8, raises `RAZORPAY_INVALID_RESPONSE`.
 - `config.get` returns the effective test mode, whether calls are simulated, the key ID and which secrets are set, without any secret.
+
+- Breaking: idempotency keys are scoped by resource, testMode and supplied userId; an omitted userId selects a separate scope. Claims, completed mirror lookups, release, provider reconciliation notes, generated order receipts, refund headers and simulated IDs use that scope. Existing claims and provider notes require app reconciliation before using the new scope.
+- Breaking: orders, plans, subscriptions and customers accept optional userId on releaseIdempotency; callers pass the same userId as the create. Refund mirrors add idempotencyUserId to preserve caller scope when userId inherits payment ownership.
+- The registered webhook route returns 500 for failed ingest results except stale events, allowing provider redelivery after an apply failure; processed, ignored, duplicate and stale events return 200.
+- Breaking: stored payment cursors reject more than 4 values and subscription cursors reject more than 5 values, matching each paginated index's declared fields plus _creationTime and _id; shorter prefix cursors remain valid.

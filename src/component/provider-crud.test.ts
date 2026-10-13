@@ -1,3 +1,4 @@
+import { scopedIdempotencyKey } from "../shared/validation.js";
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
@@ -226,7 +227,14 @@ test("live duplicate-receipt order is reconciled and its provider payments are m
     receipt: "rcpt_reconciled",
     status: "created",
     attempts: 0,
-    notes: { operatornestIdempotencyKey: "reconciled_order_key" },
+    notes: {
+      operatornestIdempotencyKey: await scopedIdempotencyKey(
+        "order",
+        "reconciled_order_key",
+        false,
+        undefined,
+      ),
+    },
     created_at: 1_567_674_500,
   };
   const payment = {

@@ -1,9 +1,16 @@
+import { api as componentApi, internal as componentInternal } from "../component/_generated/api.js";
+import { computeHmacSha256Hex } from "../shared/crypto.js";
 import { httpRouter } from "convex/server";
 import { ConvexError } from "convex/values";
-import { describe, expect, expectTypeOf, test, vi } from "vitest";
+import { afterEach, describe, expect, expectTypeOf, test, vi } from "vitest";
 import { components, internal } from "../../example/convex/_generated/api.js";
 import { Razorpay, buildCheckoutOptions, isRazorpayError, webhookEventValidator } from "./index.js";
-import { expectRazorpayError } from "../test-helpers.js";
+import {
+  setupTest,
+  stubRazorpayEnv,
+  restoreRazorpayTestState,
+  expectRazorpayError,
+} from "../test-helpers.js";
 
 vi.mock("convex/server", async (importOriginal) => ({
   ...(await importOriginal<typeof import("convex/server")>()),
@@ -344,6 +351,61 @@ function request(
 }
 
 describe("registered webhook route", () => {
+  afterEach(restoreRazorpayTestState);
+
+  test("signed apply failures return 500 and a corrected redelivery applies once; stale events return 200", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_567_674_600_000);
+    stubRazorpayEnv({ testMode: "true", webhookSecret: "fixture_webhook" });
+    const t = setupTest();
+    const payment = {
+      entity: "payment",
+      id: "pay_route",
+      amount: 1000,
+      currency: "INR",
+      status: "authorized",
+    };
+    await t.mutation(componentInternal.mutations.putPayment, {
+      raw: payment,
+      observedAt: Date.now(),
+      testMode: false,
+    });
+    const ctx = mockContext();
+    ctx.runAction.mockImplementation((_ref, args) => t.action(componentApi.webhooks.ingest, args));
+    const handler = routeHandler("/razorpay/webhook", false);
+    const deliver = async (eventId: string, createdAt = 1_567_674_599) => {
+      const body = JSON.stringify({
+        entity: "event",
+        event: "payment.authorized",
+        created_at: createdAt,
+        payload: { payment: { entity: payment } },
+      });
+      return invokeRoute(
+        handler,
+        ctx,
+        request(body, {
+          "x-razorpay-signature": await computeHmacSha256Hex("fixture_webhook", body),
+          "x-razorpay-event-id": eventId,
+        }),
+      );
+    };
+    expect((await deliver("evt_retry")).status).toBe(500);
+    expect(await t.run((context) => context.db.query("webhookEvents").first())).toMatchObject({
+      status: "failed",
+      errorCode: "RAZORPAY_MODE_MISMATCH",
+    });
+    await t.run(async (context) => {
+      const row = await context.db.query("payments").first();
+      if (row) await context.db.patch("payments", row._id, { testMode: true });
+    });
+    expect((await deliver("evt_retry")).status).toBe(200);
+    expect((await deliver("evt_retry")).status).toBe(200);
+    expect(await t.run((context) => context.db.query("webhookEvents").take(2))).toMatchObject([
+      { status: "processed" },
+    ]);
+    expect((await deliver("evt_stale", 1_567_674_600 - 30 * 24 * 60 * 60)).status).toBe(200);
+  });
+
   test("passes the raw body, headers, and callback handle without post-commit work", async () => {
     const handler = routeHandler();
     const ctx = mockContext();
@@ -450,4 +512,18 @@ test("webhook routes preserve the leading UTF-8 BOM for signature verification",
   const ctx = mockContext();
   await invokeRoute(handler, ctx, request("\ufeff{}"));
   expect(ctx.runAction.mock.calls[0]?.[1]?.body).toBe("\ufeff{}");
+});
+
+test("claim release forwards userId for each public aggregate", async () => {
+  const ctx = mockContext();
+  const client = new Razorpay(components.razorpay, { testMode: true });
+  for (const aggregate of [client.orders, client.customers, client.plans, client.subscriptions])
+    await aggregate.releaseIdempotency(ctx, { idempotencyKey: "checkout_1", userId: "alice" });
+  expect(ctx.runMutation.mock.calls.map((call) => call[1])).toEqual(
+    Array.from({ length: 4 }, () => ({
+      idempotencyKey: "checkout_1",
+      userId: "alice",
+      testMode: true,
+    })),
+  );
 });

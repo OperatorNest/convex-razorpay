@@ -46,22 +46,22 @@ test("the error guard validates every public field and rejects undeclared fields
     expect(isRazorpayError(value)).toBe(false);
 });
 
-test.each([400, 401, 404, 409, 429, 500, 503])(
+test.each([400, 401, 404, 408, 409, 429, 500, 503])(
   "HTTP %i classifies outcome without exposing provider descriptions",
   (status) => {
-    const isDefinitive = status < 500 && ![409, 429].includes(status);
+    const isDefinitive = status < 500 && ![408, 409, 429].includes(status);
     const body = { error: { code: "PROVIDER_CODE", description: "private account value" } };
     const error = classifyProviderError(status, body, false);
     expect(error.data).toEqual({
       code: "RAZORPAY_PROVIDER_ERROR",
       message: "Razorpay returned a failure response.",
-      retryable: isDefinitive,
+      retryable: status === 429,
       providerStatus: status,
       providerCode: "PROVIDER_CODE",
     });
     expect(isDefinitiveNoCreate(error)).toBe(isDefinitive);
     const repeatSafe = classifyProviderError(status, body, true);
-    expect(repeatSafe.data.retryable).toBe(true);
+    expect(repeatSafe.data.retryable).toBe(status === 408 || status === 429 || status >= 500);
     expect(isDefinitiveNoCreate(repeatSafe)).toBe(isDefinitive);
   },
 );

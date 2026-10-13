@@ -1,3 +1,4 @@
+import { scopedIdempotencyKey } from "../shared/validation.js";
 import { stubRazorpayEnv, restoreRazorpayTestState, expectRazorpayError } from "../test-helpers.js";
 import { computeSha256Hex } from "../shared/crypto.js";
 import { convexTest } from "convex-test";
@@ -36,10 +37,17 @@ async function providerOrder(overrides: Record<string, unknown> = {}) {
     amount_paid: 0,
     amount_due: 50000,
     currency: "INR",
-    receipt: `rcpt_${(await computeSha256Hex(idempotencyKey)).slice(0, 35)}`,
+    receipt: `rcpt_${(await computeSha256Hex(await scopedIdempotencyKey("order", idempotencyKey, true, undefined))).slice(0, 35)}`,
     status: "created",
     attempts: 0,
-    notes: { operatornestIdempotencyKey: idempotencyKey },
+    notes: {
+      operatornestIdempotencyKey: await scopedIdempotencyKey(
+        "order",
+        idempotencyKey,
+        true,
+        undefined,
+      ),
+    },
     created_at: 1_567_674_599,
     ...overrides,
   };
@@ -53,7 +61,12 @@ test("a reused order idempotencyKey with any different request is a conflict, ne
   expect((await t.action(api.orders.create, { partialPayment: false, ...args })).order._id).toBe(
     first.order._id,
   );
-  await conflict(t.action(api.orders.create, { partialPayment: false, ...args, userId: "user_b" }));
+  const otherUser = await t.action(api.orders.create, {
+    partialPayment: false,
+    ...args,
+    userId: "user_b",
+  });
+  expect(otherUser.order._id).not.toBe(first.order._id);
   await conflict(
     t.action(api.orders.create, { partialPayment: false, ...args, externalId: "ext_1" }),
   );
@@ -70,8 +83,9 @@ test("a reused order idempotencyKey with any different request is a conflict, ne
   );
   await conflict(t.action(api.orders.create, { ...args, partialPayment: true }));
   const { userId: _omitted, ...withoutUser } = args;
-  await conflict(t.action(api.orders.create, { partialPayment: false, ...withoutUser }));
-  expect(await t.run((ctx) => ctx.db.query("orders").take(1000))).toHaveLength(1);
+  const unscoped = await t.action(api.orders.create, { partialPayment: false, ...withoutUser });
+  expect(unscoped.order._id).not.toBe(first.order._id);
+  expect(await t.run((ctx) => ctx.db.query("orders").take(1000))).toHaveLength(3);
 });
 
 test("a live order retry returns the mirror and posts exactly once", async () => {
@@ -80,7 +94,15 @@ test("a live order retry returns the mirror and posts exactly once", async () =>
   const fetch = vi.fn(async (_url: string, _init: RequestInit) =>
     Response.json(
       await providerOrder({
-        notes: { operatornestUserId: "u1", operatornestIdempotencyKey: idempotencyKey },
+        notes: {
+          operatornestUserId: "u1",
+          operatornestIdempotencyKey: await scopedIdempotencyKey(
+            "order",
+            idempotencyKey,
+            false,
+            "u1",
+          ),
+        },
       }),
     ),
   );
@@ -96,13 +118,12 @@ test("a live order retry returns the mirror and posts exactly once", async () =>
   expect((await t.action(api.orders.create, { partialPayment: false, ...args })).order._id).toBe(
     first.order._id,
   );
-  await conflict(t.action(api.orders.create, { partialPayment: false, ...args, userId: "u2" }));
   expect(fetch).toHaveBeenCalledTimes(1);
   const init = fetch.mock.calls[0]?.[1] as RequestInit;
   const body = JSON.parse(init.body as string);
   expect(body.notes).toEqual({
     operatornestUserId: "u1",
-    operatornestIdempotencyKey: idempotencyKey,
+    operatornestIdempotencyKey: await scopedIdempotencyKey("order", idempotencyKey, false, "u1"),
   });
   expect(body.receipt).toMatch(/^rcpt_[0-9a-f]{35}$/);
 });
@@ -233,7 +254,11 @@ test("a duplicate-receipt rejection adopts only the provably identical order", a
     { status: 400 },
   );
   const adopted = await providerOrder({
-    notes: { operatornestUserId: "u1", operatornestIdempotencyKey: idempotencyKey },
+    notes: {
+      operatornestUserId: "u1",
+      operatornestIdempotencyKey: await scopedIdempotencyKey("order", idempotencyKey, true, "u1"),
+    },
+    receipt: `rcpt_${(await computeSha256Hex(await scopedIdempotencyKey("order", idempotencyKey, true, "u1"))).slice(0, 35)}`,
   });
   let existing: unknown = adopted;
   const fetch = vi.fn(async (_url: string, init: RequestInit) =>
@@ -309,7 +334,12 @@ test("a reused refund idempotencyKey with a different request is a conflict in b
   await conflict(
     t.action(api.refunds.create, { speed: "normal", ...args, notes: { why: "other" } }),
   );
-  await conflict(t.action(api.refunds.create, { speed: "normal", ...args, userId: "user_x" }));
+  const otherUser = await t.action(api.refunds.create, {
+    speed: "normal",
+    ...args,
+    userId: "user_x",
+  });
+  expect(otherUser._id).not.toBe(first._id);
 
   await conflict(
     t.mutation(internal.mutations.putTestRefund, {

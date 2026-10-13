@@ -149,5 +149,5 @@ export const list = query({
         q.eq("razorpayOrderId", razorpayOrderId).eq("testMode", readTestMode(testMode)),
       )
       .order("desc")
-      .paginate(boundedPage(paginationOpts)),
+      .paginate(boundedPage(paginationOpts, 4)),
 });

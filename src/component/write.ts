@@ -65,8 +65,12 @@ async function completeClaim(
   if (!idempotencyKey || !link.requestFingerprint) return;
   const claim = await ctx.db
     .query("idempotencyRequests")
-    .withIndex("by_resource_and_testMode_and_idempotencyKey", (q) =>
-      q.eq("resource", resource).eq("testMode", link.testMode).eq("idempotencyKey", idempotencyKey),
+    .withIndex("by_resource_and_testMode_and_userId_and_idempotencyKey", (q) =>
+      q
+        .eq("resource", resource)
+        .eq("testMode", link.testMode)
+        .eq("userId", link.userId)
+        .eq("idempotencyKey", idempotencyKey),
     )
     .unique();
   if (!claim) throw razorpayError("RAZORPAY_INVALID_RESPONSE");
@@ -131,7 +135,7 @@ export async function applyOrder(
       )
       .first();
     if (duplicate)
-      throw razorpayError("RAZORPAY_PROVIDER_ERROR", { providerStatus: 400, retryable: true });
+      throw razorpayError("RAZORPAY_PROVIDER_ERROR", { providerStatus: 400, retryable: false });
   }
   const id = await ctx.db.insert("orders", {
     ...next,
@@ -284,6 +288,9 @@ export async function applyRefund(
       statusAdvances("refund", current.status, next.status);
     await ctx.db.patch("refunds", current["_id"], {
       ...(advances ? next : next.rawStatus === undefined ? {} : { rawStatus: next.rawStatus }),
+      ...(current.idempotencyKey === undefined && link.idempotencyKey !== undefined
+        ? { idempotencyUserId: link.userId }
+        : {}),
       ...refundLinkFields({
         idempotencyKey: current.idempotencyKey ?? link.idempotencyKey,
         requestFingerprint: current.requestFingerprint ?? link.requestFingerprint,
@@ -297,6 +304,7 @@ export async function applyRefund(
   const id = await ctx.db.insert("refunds", {
     ...next,
     ...refundLinkFields(linked),
+    idempotencyUserId: link.userId,
     testMode: link.testMode,
   });
   return getOrThrow(await ctx.db.get("refunds", id));

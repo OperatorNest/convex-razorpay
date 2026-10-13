@@ -159,3 +159,12 @@ export function boundedLimit(limit = 50): number {
     throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
   return limit;
 }
+
+export function scopedIdempotencyKey(
+  resource: string,
+  key: string,
+  testMode: boolean,
+  userId: string | undefined,
+): Promise<string> {
+  return computeSha256Hex(JSON.stringify([resource, testMode, userId ?? null, key]));
+}

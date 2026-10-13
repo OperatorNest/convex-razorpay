@@ -189,6 +189,7 @@ export class Razorpay {
       args: Omit<FunctionArgs<ComponentApi["orders"]["releaseIdempotency"]>, "testMode">,
     ) =>
       ctx.runMutation(this.component.orders.releaseIdempotency, {
+        userId: args.userId,
         idempotencyKey: args.idempotencyKey,
         testMode: this.options.testMode,
       }),
@@ -387,6 +388,7 @@ export class Razorpay {
       args: Omit<FunctionArgs<ComponentApi["customers"]["releaseIdempotency"]>, "testMode">,
     ) =>
       ctx.runMutation(this.component.customers.releaseIdempotency, {
+        userId: args.userId,
         idempotencyKey: args.idempotencyKey,
         testMode: this.options.testMode,
       }),
@@ -450,6 +452,7 @@ export class Razorpay {
       args: Omit<FunctionArgs<ComponentApi["plans"]["releaseIdempotency"]>, "testMode">,
     ) =>
       ctx.runMutation(this.component.plans.releaseIdempotency, {
+        userId: args.userId,
         idempotencyKey: args.idempotencyKey,
         testMode: this.options.testMode,
       }),
@@ -623,6 +626,7 @@ export class Razorpay {
       args: Omit<FunctionArgs<ComponentApi["subscriptions"]["releaseIdempotency"]>, "testMode">,
     ) =>
       ctx.runMutation(this.component.subscriptions.releaseIdempotency, {
+        userId: args.userId,
         idempotencyKey: args.idempotencyKey,
         testMode: this.options.testMode,
       }),
@@ -673,12 +677,14 @@ export class Razorpay {
         const eventId = request.headers.get("x-razorpay-event-id") ?? "";
         try {
           const callbackHandle = onEvent ? await createFunctionHandle(onEvent) : undefined;
-          await ctx.runAction(component.webhooks.ingest, {
+          const result = await ctx.runAction(component.webhooks.ingest, {
             body,
             signature,
             eventId,
             callbackHandle,
           });
+          if (result.status === "failed" && result.errorCode !== "RAZORPAY_STALE_WEBHOOK")
+            return new Response("Webhook unavailable", { status: 500 });
         } catch (error) {
           const badRequest =
             isRazorpayError(error) && error.data.code === "RAZORPAY_INVALID_WEBHOOK_SIGNATURE";

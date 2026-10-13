@@ -20,6 +20,7 @@ import {
 } from "./provider.js";
 import {
   deterministicTestId,
+  scopedIdempotencyKey,
   integerField,
   linkedNotes,
   omitUndefined,
@@ -42,7 +43,13 @@ export const reconcile = internalAction({
   },
   returns: schema.doc("subscriptions"),
   handler: async (ctx, args): Promise<Doc<"subscriptions">> => {
-    const raw = await findByIdempotencyKey("subscription", args.idempotencyKey);
+    const providerKey = await scopedIdempotencyKey(
+      "subscription",
+      args.idempotencyKey,
+      args.testMode,
+      args.userId,
+    );
+    const raw = await findByIdempotencyKey("subscription", providerKey);
     return ctx.runMutation(internal.mutations.putSubscription, {
       raw,
       observedAt: Date.now(),
@@ -83,9 +90,12 @@ export const create = action({
     }
     timestampSeconds(args.startAt);
     timestampSeconds(args.expiresAt);
+    const providerKey = args.idempotencyKey
+      ? await scopedIdempotencyKey("subscription", args.idempotencyKey, testMode, args.userId)
+      : undefined;
     const notes = validateNotes({
       ...linkedNotes(args.notes, args.userId, args.externalId, args.metadata),
-      ...(args.idempotencyKey ? { operatornestIdempotencyKey: args.idempotencyKey } : {}),
+      ...(providerKey ? { operatornestIdempotencyKey: providerKey } : {}),
     });
     const requestFingerprint = stableStringify({
       testMode,
@@ -101,6 +111,7 @@ export const create = action({
     let shouldReconcile = false;
     if (args.idempotencyKey) {
       const claim = await ctx.runMutation(internal.idempotency.claim, {
+        userId: args.userId,
         resource: "subscription",
         idempotencyKey: args.idempotencyKey,
         requestFingerprint,
@@ -108,6 +119,7 @@ export const create = action({
       });
       if (claim === "completed") {
         const existing = await ctx.runQuery(internal.mutations.subscriptionByKey, {
+          userId: args.userId,
           idempotencyKey: args.idempotencyKey,
           testMode,
         });
@@ -121,7 +133,7 @@ export const create = action({
     if (isSimulated) {
       raw = {
         id: await deterministicTestId("sub", [
-          args.idempotencyKey ?? crypto.randomUUID(),
+          providerKey ?? crypto.randomUUID(),
           args.razorpayPlanId,
           args.totalCount,
         ]),
@@ -166,6 +178,7 @@ export const create = action({
       } catch (error) {
         if (args.idempotencyKey && isDefinitiveNoCreate(error)) {
           await ctx.runMutation(internal.idempotency.fail, {
+            userId: args.userId,
             resource: "subscription",
             idempotencyKey: args.idempotencyKey,
             requestFingerprint,
@@ -449,7 +462,7 @@ export const list = query({
         q.eq("userId", userId).eq("testMode", readTestMode(testMode)),
       )
       .order("desc")
-      .paginate(boundedPage(paginationOpts)),
+      .paginate(boundedPage(paginationOpts, 5)),
 });
 
 export const verifyCheckout = action({
@@ -524,10 +537,15 @@ export const verifyCheckout = action({
 });
 
 export const releaseIdempotency = mutation({
-  args: { idempotencyKey: v.string(), testMode: v.optional(v.boolean()) },
+  args: {
+    idempotencyKey: v.string(),
+    userId: v.optional(v.string()),
+    testMode: v.optional(v.boolean()),
+  },
   returns: v.boolean(),
   handler: (ctx, args): Promise<boolean> =>
     ctx.runMutation(internal.idempotency.release, {
+      userId: args.userId,
       resource: "subscription",
       idempotencyKey: args.idempotencyKey,
       testMode: args.testMode,

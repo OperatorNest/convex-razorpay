@@ -8,9 +8,14 @@ import { action } from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
 import schema from "./schema.js";
 import type { Doc } from "./_generated/dataModel.js";
-import { computeSha256Hex } from "../shared/crypto.js";
 import { assertModeMatches, requestProvider, resolveProviderMode } from "./provider.js";
-import { deterministicTestId, linkedNotes, record, stableStringify } from "../shared/validation.js";
+import {
+  scopedIdempotencyKey,
+  deterministicTestId,
+  linkedNotes,
+  record,
+  stableStringify,
+} from "../shared/validation.js";
 import { linkArgs, notesArg, validateAmount, validateReceipt } from "./validators.js";
 import { optionalLinkage } from "./validators.js";
 
@@ -34,6 +39,12 @@ export const create = action({
       throw razorpayError("RAZORPAY_IDEMPOTENCY_REQUIRED");
     }
     if (args.idempotencyKey !== undefined) validateIdempotencyKey(args.idempotencyKey);
+    const providerIdempotencyKey = await scopedIdempotencyKey(
+      "refund",
+      idempotencyKey,
+      testMode,
+      args.userId,
+    );
     const notes = linkedNotes(args.notes, args.userId, args.externalId, args.metadata);
     const requestFingerprint = stableStringify({
       testMode,
@@ -46,6 +57,7 @@ export const create = action({
     const existing = await ctx.runQuery(internal.mutations.refundByKey, {
       idempotencyKey,
       testMode,
+      userId: args.userId,
     });
     if (existing) {
       assertModeMatches(existing, testMode);
@@ -56,7 +68,7 @@ export const create = action({
     if (isSimulated) {
       return ctx.runMutation(internal.mutations.putTestRefund, {
         razorpayRefundId: await deterministicTestId("rfnd", [
-          idempotencyKey,
+          providerIdempotencyKey,
           args.razorpayPaymentId,
         ]),
         razorpayPaymentId: args.razorpayPaymentId,
@@ -73,8 +85,6 @@ export const create = action({
         requestFingerprint,
       });
     }
-    const providerIdempotencyKey =
-      args.idempotencyKey ?? `receipt_${await computeSha256Hex(idempotencyKey)}`;
     const raw = await requestProvider(
       "POST",
       `/payments/${encodeURIComponent(args.razorpayPaymentId)}/refund`,

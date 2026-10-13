@@ -1,3 +1,4 @@
+import { scopedIdempotencyKey } from "../shared/validation.js";
 import schema from "../../example/convex/schema.js";
 import componentSchema from "./schema.js";
 import {
@@ -234,7 +235,14 @@ test("stale plan claim reconciles note key before posting and tolerates unrelate
               period: "monthly",
               interval: 1,
               item: { name: "Pro", amount: 69900, currency: "INR" },
-              notes: { operatornestIdempotencyKey: planArgs.idempotencyKey },
+              notes: {
+                operatornestIdempotencyKey: await scopedIdempotencyKey(
+                  "plan",
+                  planArgs.idempotencyKey,
+                  true,
+                  undefined,
+                ),
+              },
               created_at: 1567674599,
             },
           ],
@@ -348,7 +356,14 @@ test("stale subscription claim reconciles provider notes before reposting", asyn
               total_count: subscriptionArgs.totalCount,
               paid_count: 0,
               remaining_count: subscriptionArgs.totalCount,
-              notes: { operatornestIdempotencyKey: subscriptionArgs.idempotencyKey },
+              notes: {
+                operatornestIdempotencyKey: await scopedIdempotencyKey(
+                  "subscription",
+                  subscriptionArgs.idempotencyKey,
+                  true,
+                  undefined,
+                ),
+              },
               created_at: 1567674599,
             },
           ],
@@ -447,7 +462,7 @@ test("refund creation derives its provider key from receipt and rejects keyless 
   if (!call) throw new Error("Expected provider refund call");
   const providerKey = call[1].headers;
   expect(providerKey).toMatchObject({
-    "X-Refund-Idempotency": expect.stringMatching(/^receipt_[0-9a-f]{64}$/),
+    "X-Refund-Idempotency": expect.stringMatching(/^[0-9a-f]{64}$/),
   });
   await expectRazorpayError(
     t.action(components.razorpay.refunds.create, {
@@ -846,9 +861,19 @@ describe("idempotency", () => {
       stubLiveRazorpayEnv();
       vi.stubGlobal(
         "fetch",
-        vi.fn(() =>
+        vi.fn(async () =>
           Promise.resolve(
-            Response.json({ ...raw, notes: { operatornestIdempotencyKey: keyed.idempotencyKey } }),
+            Response.json({
+              ...raw,
+              notes: {
+                operatornestIdempotencyKey: await scopedIdempotencyKey(
+                  resource,
+                  keyed.idempotencyKey,
+                  true,
+                  undefined,
+                ),
+              },
+            }),
           ),
         ),
       );

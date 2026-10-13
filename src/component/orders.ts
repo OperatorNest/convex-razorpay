@@ -19,6 +19,7 @@ import {
 } from "./provider.js";
 import {
   deterministicTestId,
+  scopedIdempotencyKey,
   isRecord,
   linkedNotes,
   record,
@@ -94,10 +95,13 @@ export const create = action({
     if (args.idempotencyKey !== undefined) validateIdempotencyKey(args.idempotencyKey);
     validateReceipt(args.receipt);
     const idempotencyKey = args.idempotencyKey;
+    const providerKey = idempotencyKey
+      ? await scopedIdempotencyKey("order", idempotencyKey, testMode, args.userId)
+      : undefined;
 
     const notes = validateNotes({
       ...linkedNotes(args.notes, args.userId, args.externalId, args.metadata),
-      ...(idempotencyKey ? { [idempotencyNote]: idempotencyKey } : {}),
+      ...(providerKey ? { [idempotencyNote]: providerKey } : {}),
     });
     const requestFingerprint = stableStringify({
       testMode,
@@ -109,12 +113,11 @@ export const create = action({
     });
     const receipt =
       args.receipt ??
-      (idempotencyKey
-        ? `rcpt_${(await computeSha256Hex(idempotencyKey)).slice(0, 35)}`
-        : undefined);
+      (providerKey ? `rcpt_${(await computeSha256Hex(providerKey)).slice(0, 35)}` : undefined);
     let shouldReconcile = false;
     if (idempotencyKey) {
       const claim = await ctx.runMutation(internal.idempotency.claim, {
+        userId: args.userId,
         resource: "order",
         idempotencyKey,
         requestFingerprint,
@@ -122,6 +125,7 @@ export const create = action({
       });
       if (claim === "completed") {
         const existing = await ctx.runQuery(internal.mutations.orderByKey, {
+          userId: args.userId,
           idempotencyKey,
           testMode,
         });
@@ -134,6 +138,7 @@ export const create = action({
     const failClaim = async (error: unknown) => {
       if (idempotencyKey && isDefinitiveNoCreate(error))
         await ctx.runMutation(internal.idempotency.fail, {
+          userId: args.userId,
           resource: "order",
           idempotencyKey,
           requestFingerprint,
@@ -145,7 +150,7 @@ export const create = action({
     if (isSimulated) {
       raw = {
         id: await deterministicTestId("order", [
-          idempotencyKey ?? crypto.randomUUID(),
+          providerKey ?? crypto.randomUUID(),
           args.amount,
           args.currency,
         ]),
@@ -162,8 +167,8 @@ export const create = action({
         created_at: Math.floor(Date.now() / 1000),
       };
     } else {
-      if (shouldReconcile && idempotencyKey) {
-        raw = await findByIdempotencyKey("order", idempotencyKey, receipt);
+      if (shouldReconcile && providerKey) {
+        raw = await findByIdempotencyKey("order", providerKey, receipt);
       } else {
         try {
           raw = await requestProvider("POST", "/orders", {
@@ -179,7 +184,7 @@ export const create = action({
         } catch (error) {
           let recovered: unknown;
           try {
-            recovered = await recoverDuplicateReceipt(error, receipt, idempotencyKey, {
+            recovered = await recoverDuplicateReceipt(error, receipt, providerKey, {
               amount: args.amount,
               currency: args.currency,
               notes,
@@ -360,10 +365,15 @@ export const verifyCheckout = action({
 });
 
 export const releaseIdempotency = mutation({
-  args: { idempotencyKey: v.string(), testMode: v.optional(v.boolean()) },
+  args: {
+    idempotencyKey: v.string(),
+    userId: v.optional(v.string()),
+    testMode: v.optional(v.boolean()),
+  },
   returns: v.boolean(),
   handler: (ctx, args): Promise<boolean> =>
     ctx.runMutation(internal.idempotency.release, {
+      userId: args.userId,
       resource: "order",
       idempotencyKey: args.idempotencyKey,
       testMode: args.testMode,

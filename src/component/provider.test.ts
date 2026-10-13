@@ -67,7 +67,7 @@ const providerFailure = (
   return requestProvider(method, "/resource", { isDeduplicated });
 };
 
-test("retryable is true only for reads, deduplicated calls and definitive refusals", async () => {
+test("retryable requires a transient failure and repeat safety", async () => {
   const cases: [
     method: "GET" | "POST",
     status: number,
@@ -77,11 +77,11 @@ test("retryable is true only for reads, deduplicated calls and definitive refusa
     ["GET", 500, false, true],
     ["GET", 429, false, true],
     ["POST", 500, true, true],
-    ["POST", 409, true, true],
+    ["POST", 409, true, false],
     ["POST", 500, false, false],
     ["POST", 409, false, false],
-    ["POST", 429, false, false],
-    ["POST", 400, false, true],
+    ["POST", 429, false, true],
+    ["POST", 400, false, false],
   ];
   for (const [method, status, isDeduplicated, retryable] of cases)
     await expectRazorpayErrorDetails(

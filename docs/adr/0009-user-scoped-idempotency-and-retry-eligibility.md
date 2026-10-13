@@ -1,0 +1,9 @@
+# 0009: User-scoped idempotency and retry eligibility
+
+Idempotency scope is resource, testMode, supplied userId and caller key. An omitted userId selects a separate scope. Claim creation, failure, completion, completed lookup and release use this scope. Orders, plans, subscriptions and customers accept optional userId on releaseIdempotency. A completed claim cannot be released. Apps authenticate and authorize the supplied userId.
+
+Provider reconciliation notes carry a SHA-256 identifier of the full scope. Generated order receipts, refund idempotency headers and simulated entity IDs derive from that identifier. Different users with identical keys cannot select each other's provider entities during reconciliation. Refund mirrors retain idempotencyUserId separately from userId because userId may inherit payment ownership when the create omitted it. These index and identifier changes are breaking; existing claims and provider notes need app reconciliation before callers use the new scope.
+
+Retry eligibility requires both a transient failure (network failure, timeout, 408, 429 or 5xx) and repeat safety (a read, a component- or provider-deduplicated key, 429, or a failure before sending). Every other 4xx has retryable false. An unkeyed create, customer edit or subscription change has retryable false after a network failure, timeout or 5xx. Invalid responses carry no retryable field. A refusal can permit a claim to become failed while remaining ineligible for an identical retry; definitive create refusals exclude 408, 409 and 429.
+
+Payment capture is repeat-safe for the same payment, amount and currency. Keyed order, customer, plan and subscription creates reconcile pending claims before another POST. Refunds use Razorpay's idempotency header. The component does not schedule provider retries.
