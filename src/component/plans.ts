@@ -11,9 +11,9 @@ import { collectionItems } from "./mapping.js";
 import {
   assertModeMatches,
   findByIdempotencyKey,
-  isTestMode,
   listPath,
   requestProvider,
+  resolveProviderMode,
 } from "./provider.js";
 import {
   boundedString,
@@ -61,11 +61,11 @@ export const create = action({
     validateIdempotencyKey(args.idempotencyKey);
     if (!Number.isSafeInteger(args.interval) || args.interval < (args.period === "daily" ? 7 : 1))
       throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
-    validateAmount(args.item.amount, 100);
+    validateAmount(args.item.amount);
     validateCurrency(args.item.currency);
     boundedString(args.item.name, 256);
     if (args.item.description !== undefined) boundedString(args.item.description, 4096);
-    const testMode = isTestMode(args.testMode);
+    const { testMode, isSimulated } = resolveProviderMode(args.testMode);
     const notes = validateNotes({
       ...linkedNotes(args.notes, args.userId, args.externalId, args.metadata),
       ...(args.idempotencyKey ? { [idempotencyNote]: args.idempotencyKey } : {}),
@@ -97,7 +97,7 @@ export const create = action({
       shouldReconcile = claim === "reconcile";
     }
     let raw: unknown;
-    if (testMode) {
+    if (isSimulated) {
       raw = {
         id: await deterministicTestId("plan", [
           args.idempotencyKey ?? crypto.randomUUID(),
@@ -158,7 +158,8 @@ export const fetch = action({
     ctx,
     { razorpayPlanId, testMode },
   ): Promise<Omit<Doc<"plans">, "_id" | "_creationTime">> => {
-    if (isTestMode(testMode)) {
+    const mode = resolveProviderMode(testMode);
+    if (mode.isSimulated) {
       const local = await ctx.runQuery(internal.lookup.plan, { id: razorpayPlanId });
       if (!local) throw razorpayError("RAZORPAY_NOT_FOUND");
       assertModeMatches(local, true);
@@ -170,7 +171,7 @@ export const fetch = action({
     });
     if (parseProviderResponse(() => record(raw)).id !== razorpayPlanId)
       throw razorpayError("RAZORPAY_INVALID_RESPONSE");
-    return { ...planFields(raw, Date.now()), testMode: false };
+    return { ...planFields(raw, Date.now()), testMode: mode.testMode };
   },
 });
 
@@ -179,14 +180,17 @@ export const fetchAll = action({
   returns: v.array(v.object(schema.tables.plans.validator.fields)),
   handler: async (ctx, args): Promise<Omit<Doc<"plans">, "_id" | "_creationTime">[]> => {
     const { count, skip } = validatePage(args.count, args.skip);
-    if (isTestMode(args.testMode))
+    const mode = resolveProviderMode(args.testMode);
+    if (mode.isSimulated)
       return (await ctx.runQuery(internal.lookup.plansPage, { count, skip, testMode: true })).map(
         ({ _id, _creationTime, ...entity }) => entity,
       );
     const items = collectionItems(
       await requestProvider("GET", listPath("/plans", count, skip), { idempotent: true }),
     );
-    return items.map((raw) => Object.assign(planFields(raw, Date.now()), { testMode: false }));
+    return items.map((raw) =>
+      Object.assign(planFields(raw, Date.now()), { testMode: mode.testMode }),
+    );
   },
 });
 

@@ -1,4 +1,4 @@
-import { stubRazorpayEnv, restoreRazorpayTestState } from "../test-helpers.js";
+import { stubRazorpayEnv, restoreRazorpayTestState, expectRazorpayError } from "../test-helpers.js";
 import { computeSha256Hex } from "../shared/crypto.js";
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -11,7 +11,7 @@ const idempotencyKey = "order_claim_key_0001";
 const base = { amount: 50000, currency: "INR", idempotencyKey: idempotencyKey };
 
 function conflict(promise: Promise<unknown>) {
-  return expect(promise).rejects.toMatchObject({ data: { code: "RAZORPAY_IDEMPOTENCY_CONFLICT" } });
+  return expectRazorpayError(promise, "RAZORPAY_IDEMPOTENCY_CONFLICT");
 }
 
 beforeEach(() => {
@@ -46,6 +46,7 @@ async function providerOrder(overrides: Record<string, unknown> = {}) {
 }
 
 test("a reused order idempotencyKey with any different request is a conflict, never a returned order", async () => {
+  stubRazorpayEnv({ keySecret: "fake_secret" });
   const t = convexTest(schema, modules);
   const args = { ...base, userId: "user_a", notes: { cart: "1" }, testMode: true };
   const first = await t.action(api.orders.create, { partialPayment: false, ...args });
@@ -74,6 +75,7 @@ test("a reused order idempotencyKey with any different request is a conflict, ne
 });
 
 test("a live order retry returns the mirror and posts exactly once", async () => {
+  stubRazorpayEnv({ keyId: "rzp_live_public", keySecret: "fake_secret" });
   const t = convexTest(schema, modules);
   const fetch = vi.fn(async (_url: string, _init: RequestInit) =>
     Response.json(
@@ -152,17 +154,15 @@ test("an ambiguous POST /orders stays reserved, then reconciles by receipt witho
     });
   });
   vi.stubGlobal("fetch", fetch);
-  await expect(
+  await expectRazorpayError(
     t.action(api.orders.create, { partialPayment: false, ...base }),
-  ).rejects.toMatchObject({
-    data: { code: "RAZORPAY_NETWORK_ERROR" },
-  });
+    "RAZORPAY_NETWORK_ERROR",
+  );
 
-  await expect(
+  await expectRazorpayError(
     t.action(api.orders.create, { partialPayment: false, ...base }),
-  ).rejects.toMatchObject({
-    data: { code: "RAZORPAY_IDEMPOTENCY_PENDING" },
-  });
+    "RAZORPAY_IDEMPOTENCY_PENDING",
+  );
   expect(fetch).toHaveBeenCalledTimes(1);
 
   await conflict(t.action(api.orders.create, { partialPayment: false, ...base, amount: 60000 }));
@@ -200,26 +200,23 @@ test("unresolved reconciliation requires explicit release before a definitive re
     return Response.json(await providerOrder());
   });
   vi.stubGlobal("fetch", fetch);
-  await expect(
+  await expectRazorpayError(
     t.action(api.orders.create, { partialPayment: false, ...base }),
-  ).rejects.toMatchObject({
-    data: { code: "RAZORPAY_NETWORK_ERROR" },
-  });
+    "RAZORPAY_NETWORK_ERROR",
+  );
   vi.setSystemTime(new Date("2026-10-04T00:11:00Z"));
   mode = "reject";
-  await expect(
+  await expectRazorpayError(
     t.action(api.orders.create, { partialPayment: false, ...base }),
-  ).rejects.toMatchObject({
-    data: { code: "RAZORPAY_IDEMPOTENCY_PENDING" },
-  });
+    "RAZORPAY_IDEMPOTENCY_PENDING",
+  );
   expect(
     await t.mutation(internal.idempotency.release, { resource: "order", idempotencyKey }),
   ).toBe(true);
-  await expect(
+  await expectRazorpayError(
     t.action(api.orders.create, { partialPayment: false, ...base }),
-  ).rejects.toMatchObject({
-    data: { code: "RAZORPAY_PROVIDER_ERROR" },
-  });
+    "RAZORPAY_PROVIDER_ERROR",
+  );
 
   mode = "ok";
   expect(
@@ -253,7 +250,7 @@ test("a duplicate-receipt rejection adopts only the provably identical order", a
   expect(result.order.razorpayOrderId).toBe("order_provider_1");
 
   existing = await providerOrder({ notes: { userId: "someone_else" } });
-  await expect(
+  await expectRazorpayError(
     t.action(api.orders.create, {
       partialPayment: false,
       amount: 50000,
@@ -262,10 +259,12 @@ test("a duplicate-receipt rejection adopts only the provably identical order", a
       receipt: adopted.receipt,
       userId: "u1",
     }),
-  ).rejects.toMatchObject({ data: { code: "RAZORPAY_PROVIDER_ERROR" } });
+    "RAZORPAY_PROVIDER_ERROR",
+  );
 });
 
 test("a reused refund idempotencyKey with a different request is a conflict in both modes", async () => {
+  stubRazorpayEnv({ keySecret: "fake_secret" });
   const t = convexTest(schema, modules);
   await t.mutation(internal.mutations.putPayment, {
     raw: {
@@ -310,6 +309,7 @@ test("a reused refund idempotencyKey with a different request is a conflict in b
 });
 
 test("a reused customer idempotencyKey with a different customer is a conflict", async () => {
+  stubRazorpayEnv({ keySecret: "fake_secret" });
   const t = convexTest(schema, modules);
   const args = {
     name: "Key Customer",
@@ -327,6 +327,7 @@ test("a reused customer idempotencyKey with a different customer is a conflict",
 });
 
 test("plan and subscription idempotencyKey reuse report the conflict code", async () => {
+  stubRazorpayEnv({ keySecret: "fake_secret" });
   const t = convexTest(schema, modules);
   const plan = {
     period: "monthly" as const,

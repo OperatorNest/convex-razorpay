@@ -149,12 +149,3 @@ export function boundedLimit(limit = 50): number {
 export function wellFormed(value: string): boolean {
   return !/[\uD800-\uDFFF]/u.test(value);
 }
-export function truncateText(value: string, max: number): string {
-  let result = "";
-  for (const point of value) {
-    const normalized = wellFormed(point) ? point : "�";
-    if (result.length + normalized.length > max) break;
-    result += normalized;
-  }
-  return result;
-}

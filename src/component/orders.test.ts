@@ -3,14 +3,19 @@ import { afterEach, beforeEach, expect, test, vi, describe } from "vitest";
 import { convexTest } from "convex-test";
 import { api, internal } from "./_generated/api.js";
 import { computeHmacSha256Hex } from "../shared/crypto.js";
-import { restoreRazorpayTestState, stubRazorpayEnv } from "../test-helpers.js";
+import {
+  restoreRazorpayTestState,
+  stubRazorpayEnv,
+  stubLiveRazorpayEnv,
+  stubSimulatedRazorpayEnv,
+  expectRazorpayError,
+  expectRazorpayErrorDetails,
+} from "../test-helpers.js";
 
 describe("orders", () => {
   const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
   const harness = () => convexTest(schema, modules);
-
-  const invalid = { data: { code: "RAZORPAY_INVALID_ARGUMENT" } };
 
   const payment = {
     entity: "payment",
@@ -31,6 +36,7 @@ describe("orders", () => {
   afterEach(restoreRazorpayTestState);
 
   test("partial-payment checkout accepts a smaller authenticated payment", async () => {
+    stubRazorpayEnv({ keySecret: "fixture_secret", webhookSecret: "fixture_webhook" });
     const t = harness();
     const order = (
       await t.action(api.orders.create, {
@@ -91,7 +97,7 @@ describe("orders", () => {
           ),
         ),
     );
-    await expect(
+    await expectRazorpayError(
       t.action(api.orders.create, {
         amount: 1000,
         currency: "INR",
@@ -99,12 +105,28 @@ describe("orders", () => {
         notes: { sku: "new" },
         partialPayment: true,
       }),
-    ).rejects.toMatchObject({ data: { code: "RAZORPAY_PROVIDER_ERROR" } });
+      "RAZORPAY_PROVIDER_ERROR",
+    );
+  });
+
+  test("order amounts below 100 are accepted and non-positive amounts are rejected", async () => {
+    stubRazorpayEnv({ keySecret: "fixture_secret" });
+    const t = harness();
+    const create = (amount: number) =>
+      t.action(api.orders.create, {
+        partialPayment: false,
+        amount,
+        currency: "INR",
+        testMode: true,
+      });
+    expect((await create(1)).order).toMatchObject({ amount: 1 });
+    expect((await create(99)).order).toMatchObject({ amount: 99 });
+    await expectRazorpayError(create(0), "RAZORPAY_INVALID_ARGUMENT");
   });
 
   test("original metadata is bounded before linkage overwrites it", async () => {
     const t = harness();
-    await expect(
+    await expectRazorpayError(
       t.action(api.orders.create, {
         partialPayment: false,
         amount: 1000,
@@ -113,7 +135,8 @@ describe("orders", () => {
         metadata: { userId: "x".repeat(300000) },
         testMode: true,
       }),
-    ).rejects.toMatchObject(invalid);
+      "RAZORPAY_INVALID_ARGUMENT",
+    );
   });
 });
 
@@ -121,12 +144,6 @@ describe("orders", () => {
   const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
   const harness = () => convexTest(schema, modules);
-
-  const invalid = { data: { code: "RAZORPAY_INVALID_ARGUMENT" } };
-
-  const pending = { data: { code: "RAZORPAY_IDEMPOTENCY_PENDING" } };
-
-  const rejected = { data: { code: "RAZORPAY_PROVIDER_ERROR", providerStatus: 400 } };
 
   const ownerNotes = {
     userId: "attacker",
@@ -248,7 +265,7 @@ describe("orders", () => {
     async (key) => {
       const t = harness();
       for (const field of ["notes", "metadata"]) {
-        await expect(
+        await expectRazorpayError(
           t.action(api.orders.create, {
             partialPayment: false,
             amount: 1000,
@@ -256,12 +273,15 @@ describe("orders", () => {
             [field]: { [key]: "attacker" },
             testMode: true,
           }),
-        ).rejects.toMatchObject(invalid);
+          "RAZORPAY_INVALID_ARGUMENT",
+        );
       }
     },
   );
 
   test("app ownership survives deceptive notes and propagates to payment and refund", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_000_000);
     const t = harness();
     const fetch = vi.fn((_url: string, _init: RequestInit) =>
       Promise.resolve(Response.json({ ...order, notes: ownerNotes })),
@@ -346,6 +366,7 @@ describe("orders", () => {
   });
 
   test("simulated duplicate receipt never returns another user's order", async () => {
+    stubRazorpayEnv({ keySecret: "fixture_secret", webhookSecret: "fixture_webhook" });
     const t = harness();
     const args = { amount: 1000, currency: "INR", receipt: "fixture_receipt", testMode: true };
     const first = await t.action(api.orders.create, {
@@ -353,9 +374,11 @@ describe("orders", () => {
       ...args,
       userId: "first",
     });
-    await expect(
+    await expectRazorpayErrorDetails(
       t.action(api.orders.create, { partialPayment: false, ...args, userId: "second" }),
-    ).rejects.toMatchObject(rejected);
+      "RAZORPAY_PROVIDER_ERROR",
+      { providerStatus: 400 },
+    );
     expect(
       await t.query(api.orders.get, {
         razorpayOrderId: first.order.razorpayOrderId,
@@ -378,14 +401,16 @@ describe("orders", () => {
       ),
     );
     vi.stubGlobal("fetch", fetch);
-    await expect(
+    await expectRazorpayErrorDetails(
       t.action(api.orders.create, {
         partialPayment: false,
         amount: 1000,
         currency: "INR",
         receipt: "fixture_receipt",
       }),
-    ).rejects.toMatchObject(rejected);
+      "RAZORPAY_PROVIDER_ERROR",
+      { providerStatus: 400 },
+    );
     expect(await t.query(api.orders.get, { razorpayOrderId: order.id })).toBeNull();
   });
 
@@ -408,21 +433,24 @@ describe("orders", () => {
     });
     vi.stubGlobal("fetch", fetch);
     const args = { amount: 1000, currency: "INR", idempotencyKey: "fixture_bound_key" };
-    await expect(
+    await expectRazorpayError(
       t.action(api.orders.create, { partialPayment: false, ...args }),
-    ).rejects.toMatchObject({
-      data: { code: "RAZORPAY_NETWORK_ERROR" },
-    });
+      "RAZORPAY_NETWORK_ERROR",
+    );
     vi.setSystemTime(1_660_000);
-    await expect(
+    await expectRazorpayError(
       t.action(api.orders.create, { partialPayment: false, ...args }),
-    ).rejects.toMatchObject(pending);
+      "RAZORPAY_IDEMPOTENCY_PENDING",
+    );
     expect(fetch).toHaveBeenCalledTimes(21);
     expect(fetch.mock.calls.filter(([, init]) => init.method === "POST")).toHaveLength(1);
     expect(fetch.mock.calls.at(-1)?.[0]).toContain("skip=1900");
   });
 
   test("payment and refund never inherit opposite-mode parent ownership", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_000_000);
+    stubSimulatedRazorpayEnv();
     const t = harness();
     const simulated = await t.action(api.orders.create, {
       partialPayment: false,
@@ -433,6 +461,7 @@ describe("orders", () => {
       testMode: true,
     });
     const rawPayment = { ...payment, order_id: simulated.order.razorpayOrderId, notes: ownerNotes };
+    stubLiveRazorpayEnv();
     vi.stubGlobal(
       "fetch",
       vi.fn(() => Promise.resolve(Response.json(rawPayment))),
@@ -443,6 +472,7 @@ describe("orders", () => {
     });
     expect(livePayment).not.toHaveProperty("userId");
     expect(livePayment).not.toHaveProperty("externalId");
+    stubSimulatedRazorpayEnv();
     const simulatedRefund = await t.action(api.orders.create, {
       partialPayment: false,
       amount: 1000,
@@ -450,7 +480,6 @@ describe("orders", () => {
       userId: "simulated_parent_owner",
       testMode: true,
     });
-    vi.stubEnv("RAZORPAY_TEST_MODE", "true");
     expect(
       await ingest(
         t,
@@ -477,7 +506,7 @@ describe("orders", () => {
         })
         .then(({ page }) => page),
     ).toMatchObject([{ userId: "simulated_parent_owner" }]);
-    vi.stubEnv("RAZORPAY_TEST_MODE", undefined);
+    stubLiveRazorpayEnv();
     vi.stubGlobal(
       "fetch",
       vi.fn(() =>
@@ -498,7 +527,8 @@ describe("orders", () => {
     expect(refund).not.toHaveProperty("userId");
   });
 
-  test("simulated receipts reject another key and unkeyed orders allocate independent IDs", async () => {
+  test("simulated receipts reject another key with a failed claim and unkeyed orders allocate independent IDs", async () => {
+    stubRazorpayEnv({ keySecret: "fixture_secret", webhookSecret: "fixture_webhook" });
     const t = harness();
     const args = { amount: 1000, currency: "INR", testMode: true };
     const first = await t.action(api.orders.create, { partialPayment: false, ...args });
@@ -512,14 +542,29 @@ describe("orders", () => {
     };
     const created = await t.action(api.orders.create, { partialPayment: false, ...keyed });
     expect(await t.action(api.orders.create, { partialPayment: false, ...keyed })).toEqual(created);
-    await expect(
+    await expectRazorpayErrorDetails(
       t.action(api.orders.create, {
         partialPayment: false,
         ...keyed,
         idempotencyKey: "fixture_receipt_second",
         userId: "second",
       }),
-    ).rejects.toMatchObject(rejected);
+      "RAZORPAY_PROVIDER_ERROR",
+      { providerStatus: 400, retryable: false },
+    );
+    expect(
+      await t.run((ctx) =>
+        ctx.db
+          .query("idempotencyRequests")
+          .withIndex("by_resource_and_testMode_and_idempotencyKey", (q) =>
+            q
+              .eq("resource", "order")
+              .eq("testMode", true)
+              .eq("idempotencyKey", "fixture_receipt_second"),
+          )
+          .unique(),
+      ),
+    ).toMatchObject({ status: "failed" });
     expect(
       await t.mutation(internal.idempotency.release, {
         resource: "order",

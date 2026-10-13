@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { expectRazorpayError } from "../test-helpers.js";
 import {
   deterministicTestId,
   integerField,
@@ -13,42 +14,52 @@ import {
 } from "./validation.js";
 
 describe("shared validation and state", () => {
-  test("record and string fields reject invalid provider shapes with a code", () => {
+  test("record and string fields reject invalid provider shapes with a code", async () => {
     expect(isRecord({ ok: true })).toBe(true);
     expect(isRecord([])).toBe(false);
     expect(isRecord(null)).toBe(false);
     expect(record({ id: "pay_1" })).toEqual({ id: "pay_1" });
     expect(stringField("pay_1")).toBe("pay_1");
     for (const value of [null, [], "bad"]) {
-      expect(() => record(value)).toThrowError(
-        expect.objectContaining({
-          data: expect.objectContaining({ code: "RAZORPAY_INVALID_ARGUMENT" }),
-        }),
+      await expectRazorpayError(
+        Promise.resolve().then(() => record(value)),
+        "RAZORPAY_INVALID_ARGUMENT",
       );
     }
     for (const value of [undefined, "", 1]) {
-      expect(() => stringField(value)).toThrowError(
-        expect.objectContaining({
-          data: expect.objectContaining({ code: "RAZORPAY_INVALID_ARGUMENT" }),
-        }),
+      await expectRazorpayError(
+        Promise.resolve().then(() => stringField(value)),
+        "RAZORPAY_INVALID_ARGUMENT",
       );
     }
   });
 
-  test("money requires a safe integer in subunits", () => {
+  test("money requires a safe integer in subunits", async () => {
     expect(integerField(50000, 100)).toBe(50000);
     for (const value of [99, 100.5, Number.MAX_SAFE_INTEGER + 1, "50000", -1]) {
-      expect(() => integerField(value, 100)).toThrow();
+      await expectRazorpayError(
+        Promise.resolve().then(() => integerField(value, 100)),
+        "RAZORPAY_INVALID_ARGUMENT",
+      );
     }
   });
 
-  test("notes enforce 15 keys and 256 characters, including linkage", () => {
+  test("notes enforce 15 keys and 256 characters, including linkage", async () => {
     expect(validateNotes({ invoice: "abc" })).toEqual({ invoice: "abc" });
-    expect(() =>
-      validateNotes(Object.fromEntries(Array.from({ length: 16 }, (_, i) => [`k${i}`, "v"]))),
-    ).toThrow();
-    expect(() => validateNotes({ a: "x".repeat(257) })).toThrow();
-    expect(() => linkedNotes({}, "u", undefined, { ["x".repeat(257)]: "v" })).toThrow();
+    await expectRazorpayError(
+      Promise.resolve().then(() =>
+        validateNotes(Object.fromEntries(Array.from({ length: 16 }, (_, i) => [`k${i}`, "v"]))),
+      ),
+      "RAZORPAY_INVALID_ARGUMENT",
+    );
+    await expectRazorpayError(
+      Promise.resolve().then(() => validateNotes({ a: "x".repeat(257) })),
+      "RAZORPAY_INVALID_ARGUMENT",
+    );
+    await expectRazorpayError(
+      Promise.resolve().then(() => linkedNotes({}, "u", undefined, { ["x".repeat(257)]: "v" })),
+      "RAZORPAY_INVALID_ARGUMENT",
+    );
     expect(linkedNotes({}, "u-1", "external-1", { tier: "pro" })).toEqual({
       operatornestUserId: "u-1",
       operatornestExternalId: "external-1",

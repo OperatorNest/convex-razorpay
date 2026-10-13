@@ -1,5 +1,9 @@
 import { makeFunctionReference } from "convex/server";
-import { stubRazorpayEnv, restoreRazorpayTestState } from "../../src/test-helpers.js";
+import {
+  stubRazorpayEnv,
+  restoreRazorpayTestState,
+  expectRazorpayError,
+} from "../../src/test-helpers.js";
 import { computeHmacSha256Hex } from "@operatornest/convex-razorpay";
 import { register } from "@operatornest/convex-razorpay/test";
 import { convexTest } from "convex-test";
@@ -21,6 +25,11 @@ beforeEach(() => {
 afterEach(() => {
   restoreRazorpayTestState();
 });
+
+function useFixtureClock(): void {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(1_567_674_660_000);
+}
 
 test("get prefers an active subscription over a newer abandoned checkout", async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
@@ -87,12 +96,13 @@ test("get prefers an active subscription over a newer abandoned checkout", async
       })
     )?.razorpaySubscriptionId,
   ).toBe(abandoned.razorpaySubscriptionId);
-  await expect(
+  await expectRazorpayError(
     t.query(components.razorpay.subscriptions.get, {
       userId: "user_returning",
       statuses: Array.from({ length: 21 }, () => "active" as const),
     }),
-  ).rejects.toThrow("An argument is invalid, missing or out of bounds.");
+    "RAZORPAY_INVALID_ARGUMENT",
+  );
 });
 
 test("getOrCreate refreshes a user's customer profile and keeps omitted contact", async () => {
@@ -158,12 +168,14 @@ test("getOrCreate refuses an idempotent provider customer already linked to anot
     testMode: true,
   };
   await t.action(components.razorpay.customers.getOrCreate, { ...args, userId: "user_a" });
-  await expect(
+  await expectRazorpayError(
     t.action(components.razorpay.customers.getOrCreate, { ...args, userId: "user_b" }),
-  ).rejects.toMatchObject({ data: { code: "RAZORPAY_CUSTOMER_CONFLICT" } });
+    "RAZORPAY_CUSTOMER_CONFLICT",
+  );
 });
 
 test("subscription.charged webhook links payment to its subscription and invoice", async () => {
+  useFixtureClock();
   vi.stubEnv("RAZORPAY_WEBHOOK_SECRET", "whsec_subscription_fixture");
   const t = convexTest(schema, modules);
   register(t);
@@ -247,12 +259,13 @@ test("app rejects unauthenticated order creation and reads", async () => {
   const t = convexTest(schema, modules);
   register(t);
 
-  await expect(t.action(api.example.createOrder, { cartId: "cart-one" })).rejects.toMatchObject({
-    data: { code: "APP_AUTH_REQUIRED", message: "Authentication is required." },
-  });
+  await expect(t.action(api.example.createOrder, { cartId: "cart-one" })).rejects.toHaveProperty(
+    "data.code",
+    "APP_AUTH_REQUIRED",
+  );
   await expect(
     t.query(api.example.getOrder, { razorpayOrderId: "order_test_missing" }),
-  ).rejects.toMatchObject({ data: { code: "APP_AUTH_REQUIRED" } });
+  ).rejects.toHaveProperty("data.code", "APP_AUTH_REQUIRED");
 });
 
 const rawBody =
@@ -273,7 +286,21 @@ test("HTTP route rejects missing secret and invalid signature", async () => {
   expect((await request("0".repeat(64))).status).toBe(401);
 });
 
+test("HTTP route acknowledges a stale event with 200 without invoking the callback", async () => {
+  vi.stubEnv("RAZORPAY_WEBHOOK_SECRET", "whsec_test_secret_123");
+  const t = convexTest(schema, modules);
+  register(t);
+  const response = await t.fetch("/razorpay/webhook", {
+    method: "POST",
+    body: rawBody,
+    headers: { "x-razorpay-event-id": "evt_example_stale", "x-razorpay-signature": signature },
+  });
+  expect(response.status).toBe(200);
+  expect(await t.query(internal.e2e.notificationCount, { eventId: "evt_example_stale" })).toBe(0);
+});
+
 test("HTTP route verifies the raw body, then deduplicates a retry", async () => {
+  useFixtureClock();
   vi.stubEnv("RAZORPAY_WEBHOOK_SECRET", "whsec_test_secret_123");
   const t = convexTest(schema, modules);
   register(t);
@@ -341,6 +368,7 @@ test("callback invocation counter upgrades a legacy row on the next invocation",
 });
 
 test("callback failure rolls back entity, callback, and dedupe writes so Razorpay can retry", async () => {
+  useFixtureClock();
   vi.stubEnv("RAZORPAY_WEBHOOK_SECRET", "whsec_test_secret_123");
   const t = convexTest(schema, modules);
   register(t);

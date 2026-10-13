@@ -25,11 +25,7 @@ describe("lookup", () => {
   };
 
   beforeEach(() =>
-    stubRazorpayEnv({
-      keyId: "rzp_test_fixture",
-      keySecret: "fixture_secret",
-      webhookSecret: "fixture_webhook",
-    }),
+    stubRazorpayEnv({ keySecret: "fixture_secret", webhookSecret: "fixture_webhook" }),
   );
 
   afterEach(restoreRazorpayTestState);

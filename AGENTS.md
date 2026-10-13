@@ -12,7 +12,7 @@ Client groups match component modules: orders, payments, refunds, customers, pla
 
 Authored `src/` runs in Convex V8 and edge runtimes. Use platform fetch, WebCrypto and generated env; never add `"use node"`, Node built-ins, `Buffer` or `process`. Keep zero runtime dependencies and `convex` as a `^1.46.0` peer.
 
-Credentials belong only in component env bound by app reference. Never put real credentials in arguments, rows, logs, tests or examples. Parse all component env through `readConfig(env)`; missing required values and malformed values raise `RAZORPAY_NOT_CONFIGURED`. Test mode is enabled by a true client option or `RAZORPAY_TEST_MODE=true`; a false option cannot disable the env. Reject recognizable live keys in test mode.
+Credentials belong only in component env bound by app reference. Never put real credentials in arguments, rows, logs, tests or examples. Parse all component env through `readConfig(env)`; missing required values and malformed values raise `RAZORPAY_NOT_CONFIGURED`. Resolve test mode only through `resolveRazorpayTestMode`, which extends the shared `resolveTestMode`: a true client option, `RAZORPAY_TEST_MODE=true` or an `rzp_test_` key ID enables it, and a false option cannot disable either env source. Test mode with a key ID calls Razorpay's test API; test mode without a key ID simulates locally. Reject `rzp_live_` keys in test mode.
 
 Every provider mirror stores `testMode`. Read indexes include testMode; writes reject an existing opposite-testMode row. Provider notes cannot establish app linkage or settle claims without an explicit request fingerprint. App authentication, authorization, trusted prices and fulfillment remain app responsibilities.
 
@@ -20,11 +20,11 @@ Provider responses and signed webhooks share internal apply mutations. Verify th
 
 ## Query and validator patterns
 
-Public functions declare `args` and `returns`. Use `schema.doc` for mirrors and shared validators with `Infer` for shared shapes. Allow `v.any()` only for unindexed provider fields named `raw*`. Reads are bounded and indexed; index names list fields in order joined by `_and_`. Page reads use `boundedPage` with 1–100 items and maximumRowsRead. Validate page limits before database reads. Queries must not use `Date.now()`; mutations must not fan out unbounded requests.
+Public functions declare `args` and `returns`. Use `schema.doc` for mirrors and shared validators with `Infer` for shared shapes. Allow `v.any()` only for unindexed provider fields named `raw*`. Reads are bounded and indexed; index names list fields in order joined by `_and_`. Page reads pass `boundedPage(paginationOpts)` from `src/shared/bounds.ts` to `paginate` and return `paginationResultValidator`. Validate page limits before database reads. Queries must not use `Date.now()`; mutations must not fan out unbounded requests.
 
-Consumer errors come from `razorpayError` in `src/shared/errors.ts`. Maintain one `RAZORPAY_ERROR_CODES` list, fixed messages, a complete shape guard and the README error table. Error data is `{ code, message, retryable?, providerStatus?, providerCode? }`; retryable belongs only to provider and network errors, and provider codes are bounded to 64 code units. Never expose provider descriptions, response bodies or caller fields in errors, or throw plain `Error` to consumers.
+Consumer errors come from `razorpayError` in `src/shared/errors.ts`. Maintain one `RAZORPAY_ERROR_CODES` list, fixed messages, a complete shape guard and the README error table. Error data is `{ code, message, retryable?, providerStatus?, providerCode? }`; every provider and network error passes `retryable` explicitly and no other code carries it, and provider codes are bounded to 64 code units. Never expose provider descriptions, response bodies or caller fields in errors, or throw plain `Error` to consumers.
 
-Keep idempotency claims indefinitely; unresolved claims require reconciliation before explicit release. Webhook deduplication retention uses bounded batches.
+Keep idempotency claims indefinitely; unresolved claims require reconciliation before explicit release. Webhook deduplication retention uses bounded batches in an internal function; signed events older than retention minus one day are recorded as failed receipts with `RAZORPAY_STALE_WEBHOOK`.
 
 ## Generated files
 

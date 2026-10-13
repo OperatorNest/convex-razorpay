@@ -3,7 +3,7 @@ import { paymentFields } from "./mapping.js";
 import { orderFields } from "./mapping.js";
 import schema from "./schema.js";
 import type { Doc } from "./_generated/dataModel.js";
-import { readConfig, requireConfigValue } from "./config.js";
+import { readConfig, requireConfigValue } from "../shared/config.js";
 import { razorpayError, isRazorpayError } from "../shared/errors.js";
 import { v } from "convex/values";
 import { action, query, env, mutation } from "./_generated/server.js";
@@ -12,9 +12,9 @@ import { collectionItems } from "./mapping.js";
 import {
   assertModeMatches,
   findByIdempotencyKey,
-  isTestMode,
-  resolveMode,
+  readTestMode,
   requestProvider,
+  resolveProviderMode,
 } from "./provider.js";
 import {
   deterministicTestId,
@@ -90,8 +90,8 @@ export const create = action({
   },
   returns: v.object({ order: schema.doc("orders"), keyId: v.optional(v.string()) }),
   handler: async (ctx, args): Promise<{ order: Doc<"orders">; keyId?: string }> => {
-    const testMode = isTestMode(args.testMode);
-    validateAmount(args.amount, 100);
+    const { testMode, isSimulated } = resolveProviderMode(args.testMode);
+    validateAmount(args.amount);
     validateCurrency(args.currency);
     validateIdempotencyKey(args.idempotencyKey);
     validateReceipt(args.receipt);
@@ -144,7 +144,7 @@ export const create = action({
         });
     };
     let raw: unknown;
-    if (testMode) {
+    if (isSimulated) {
       raw = {
         id: await deterministicTestId("order", [
           idempotencyKey ?? crypto.randomUUID(),
@@ -227,7 +227,8 @@ export const fetch = action({
     ctx,
     { razorpayOrderId, testMode },
   ): Promise<Omit<Doc<"orders">, "_id" | "_creationTime">> => {
-    if (isTestMode(testMode)) {
+    const mode = resolveProviderMode(testMode);
+    if (mode.isSimulated) {
       const local = await ctx.runQuery(internal.lookup.order, { id: razorpayOrderId });
       if (!local) throw razorpayError("RAZORPAY_NOT_FOUND");
       assertModeMatches(local, true);
@@ -239,7 +240,7 @@ export const fetch = action({
     });
     if (parseProviderResponse(() => record(raw)).id !== razorpayOrderId)
       throw razorpayError("RAZORPAY_INVALID_RESPONSE");
-    return { ...orderFields(raw, Date.now()), testMode: false };
+    return { ...orderFields(raw, Date.now()), testMode: mode.testMode };
   },
 });
 
@@ -250,7 +251,8 @@ export const fetchPayments = action({
     ctx,
     { razorpayOrderId, testMode },
   ): Promise<Omit<Doc<"payments">, "_id" | "_creationTime">[]> => {
-    if (isTestMode(testMode)) {
+    const mode = resolveProviderMode(testMode);
+    if (mode.isSimulated) {
       const local = await ctx.runQuery(internal.lookup.paymentsForOrder, {
         razorpayOrderId,
         limit: 100,
@@ -267,7 +269,9 @@ export const fetchPayments = action({
     for (const raw of items)
       if (parseProviderResponse(() => record(raw)).order_id !== razorpayOrderId)
         throw razorpayError("RAZORPAY_INVALID_RESPONSE");
-    return items.map((raw) => Object.assign(paymentFields(raw, Date.now()), { testMode: false }));
+    return items.map((raw) =>
+      Object.assign(paymentFields(raw, Date.now()), { testMode: mode.testMode }),
+    );
   },
 });
 
@@ -278,7 +282,7 @@ export const get = query({
     ctx.db
       .query("orders")
       .withIndex("by_testMode_and_razorpayOrderId", (q) =>
-        q.eq("testMode", resolveMode(testMode)).eq("razorpayOrderId", razorpayOrderId),
+        q.eq("testMode", readTestMode(testMode)).eq("razorpayOrderId", razorpayOrderId),
       )
       .unique(),
 });
@@ -303,19 +307,19 @@ export const verifyCheckout = action({
         args.signature,
       ))
     ) {
-      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
+      throw razorpayError("RAZORPAY_INVALID_PAYMENT_SIGNATURE");
     }
     const order = await ctx.runQuery(internal.lookup.order, { id: args.razorpayOrderId });
     if (!order) throw razorpayError("RAZORPAY_NOT_FOUND");
     if (order.createdThroughComponent !== true) {
       throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     }
-    const testMode = isTestMode(args.testMode);
+    const { testMode, isSimulated } = resolveProviderMode(args.testMode);
     assertModeMatches(order, testMode);
     if (args.userId !== undefined && order.userId !== args.userId) {
       throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     }
-    if (testMode) {
+    if (isSimulated) {
       const local = await ctx.runQuery(internal.lookup.payment, { id: args.razorpayPaymentId });
       if (!local) throw razorpayError("RAZORPAY_NOT_FOUND");
       assertModeMatches(local, true);
@@ -351,7 +355,7 @@ export const verifyCheckout = action({
       await ctx.runMutation(internal.mutations.putPayment, {
         raw: payment,
         observedAt: Date.now(),
-        testMode: false,
+        testMode,
       });
     }
     return ctx.runMutation(internal.mutations.markVerified, {

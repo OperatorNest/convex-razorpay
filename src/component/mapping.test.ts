@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { expectRazorpayError } from "../test-helpers.js";
 import {
   collectionItems,
   customerFields,
@@ -125,28 +126,57 @@ describe("provider entity parsing", () => {
       ).toBe(1567674600000);
     });
 
-    test(`${fixture.kind}: rejects wrong entity, id, currency, and malformed notes`, () => {
-      expect(() => fixture.parse({ ...fixture.raw, entity: "wrong" }, observedAt)).toThrow();
-      expect(() => fixture.parse({ ...fixture.raw, id: "bad_1" }, observedAt)).toThrow();
-      expect(() => fixture.parse({ ...fixture.raw, notes: ["bad"] }, observedAt)).toThrow();
+    test(`${fixture.kind}: rejects wrong entity, id, currency, and malformed notes`, async () => {
+      await expectRazorpayError(
+        Promise.resolve().then(() =>
+          fixture.parse({ ...fixture.raw, entity: "wrong" }, observedAt),
+        ),
+        "RAZORPAY_INVALID_RESPONSE",
+      );
+      await expectRazorpayError(
+        Promise.resolve().then(() => fixture.parse({ ...fixture.raw, id: "bad_1" }, observedAt)),
+        "RAZORPAY_INVALID_RESPONSE",
+      );
+      await expectRazorpayError(
+        Promise.resolve().then(() => fixture.parse({ ...fixture.raw, notes: ["bad"] }, observedAt)),
+        "RAZORPAY_INVALID_RESPONSE",
+      );
       expect(fixture.parse({ ...fixture.raw, notes: { a: 1 } }, observedAt).notes).toEqual({
         a: "1",
       });
-      expect(() =>
-        fixture.parse({ ...fixture.raw, created_at: Number.MAX_SAFE_INTEGER }, observedAt),
-      ).toThrow();
-      expect(() =>
-        fixture.parse({ ...fixture.raw, updated_at: Number.MAX_SAFE_INTEGER }, observedAt),
-      ).toThrow();
+      await expectRazorpayError(
+        Promise.resolve().then(() =>
+          fixture.parse({ ...fixture.raw, created_at: Number.MAX_SAFE_INTEGER }, observedAt),
+        ),
+        "RAZORPAY_INVALID_RESPONSE",
+      );
+      await expectRazorpayError(
+        Promise.resolve().then(() =>
+          fixture.parse({ ...fixture.raw, updated_at: Number.MAX_SAFE_INTEGER }, observedAt),
+        ),
+        "RAZORPAY_INVALID_RESPONSE",
+      );
     });
   }
 
-  test("order totals and safe integer amounts are required", () => {
+  test("order totals and safe integer amounts are required", async () => {
     const raw = cases[0].raw;
-    expect(() => orderFields({ ...raw, amount: 100.5 }, observedAt)).toThrow();
-    expect(() => orderFields({ ...raw, amount_paid: -1 }, observedAt)).toThrow();
-    expect(() => orderFields({ ...raw, amount_due: 1 }, observedAt)).toThrow();
-    expect(() => orderFields({ ...raw, currency: "inr" }, observedAt)).toThrow();
+    await expectRazorpayError(
+      Promise.resolve().then(() => orderFields({ ...raw, amount: 100.5 }, observedAt)),
+      "RAZORPAY_INVALID_RESPONSE",
+    );
+    await expectRazorpayError(
+      Promise.resolve().then(() => orderFields({ ...raw, amount_paid: -1 }, observedAt)),
+      "RAZORPAY_INVALID_RESPONSE",
+    );
+    await expectRazorpayError(
+      Promise.resolve().then(() => orderFields({ ...raw, amount_due: 1 }, observedAt)),
+      "RAZORPAY_INVALID_RESPONSE",
+    );
+    await expectRazorpayError(
+      Promise.resolve().then(() => orderFields({ ...raw, currency: "inr" }, observedAt)),
+      "RAZORPAY_INVALID_RESPONSE",
+    );
   });
 
   test("notes coerce scalar values and retain only the first fifteen keys", () => {
@@ -169,46 +199,99 @@ describe("provider entity parsing", () => {
     expect(parsed.notes).not.toHaveProperty("key15");
   });
 
-  test("payment authority fields reject invalid capture and optional numeric types", () => {
+  test("payment authority fields reject invalid capture and optional numeric types", async () => {
     const raw = cases[1].raw;
-    expect(() =>
-      paymentFields({ ...raw, status: "captured", captured: false }, observedAt),
-    ).toThrow();
-    expect(() => paymentFields({ ...raw, amount_refunded: "1" }, observedAt)).toThrow();
-    expect(() => paymentFields({ ...raw, fee: "100" }, observedAt)).toThrow();
-    expect(() => paymentFields({ ...raw, order_id: 1 }, observedAt)).toThrow();
-    expect(() => paymentFields({ ...raw, currency: "inr" }, observedAt)).toThrow();
+    await expectRazorpayError(
+      Promise.resolve().then(() =>
+        paymentFields({ ...raw, status: "captured", captured: false }, observedAt),
+      ),
+      "RAZORPAY_INVALID_RESPONSE",
+    );
+    await expectRazorpayError(
+      Promise.resolve().then(() => paymentFields({ ...raw, amount_refunded: "1" }, observedAt)),
+      "RAZORPAY_INVALID_RESPONSE",
+    );
+    await expectRazorpayError(
+      Promise.resolve().then(() => paymentFields({ ...raw, fee: "100" }, observedAt)),
+      "RAZORPAY_INVALID_RESPONSE",
+    );
+    await expectRazorpayError(
+      Promise.resolve().then(() => paymentFields({ ...raw, order_id: 1 }, observedAt)),
+      "RAZORPAY_INVALID_RESPONSE",
+    );
+    await expectRazorpayError(
+      Promise.resolve().then(() => paymentFields({ ...raw, currency: "inr" }, observedAt)),
+      "RAZORPAY_INVALID_RESPONSE",
+    );
   });
 
-  test("refund, plan, and subscription reject malformed money and counts", () => {
-    expect(() => refundFields({ ...cases[2].raw, amount: -1 }, observedAt)).toThrow();
-    expect(() => refundFields({ ...cases[2].raw, payment_id: "other_1" }, observedAt)).toThrow();
-    expect(() =>
-      planFields(
-        { ...cases[4].raw, item: { name: "Pro", amount: "69900", currency: "INR" } },
-        observedAt,
+  test("refund, plan, and subscription reject malformed money and counts", async () => {
+    await expectRazorpayError(
+      Promise.resolve().then(() => refundFields({ ...cases[2].raw, amount: -1 }, observedAt)),
+      "RAZORPAY_INVALID_RESPONSE",
+    );
+    await expectRazorpayError(
+      Promise.resolve().then(() =>
+        refundFields({ ...cases[2].raw, payment_id: "other_1" }, observedAt),
       ),
-    ).toThrow();
-    expect(() =>
-      planFields(
-        { ...cases[4].raw, item: { name: "Pro", amount: 69900, currency: "inr" } },
-        observedAt,
+      "RAZORPAY_INVALID_RESPONSE",
+    );
+    await expectRazorpayError(
+      Promise.resolve().then(() =>
+        planFields(
+          { ...cases[4].raw, item: { name: "Pro", amount: "69900", currency: "INR" } },
+          observedAt,
+        ),
       ),
-    ).toThrow();
-    expect(() => subscriptionFields({ ...cases[5].raw, total_count: 1.5 }, observedAt)).toThrow();
-    expect(() => subscriptionFields({ ...cases[5].raw, quantity: 0 }, observedAt)).toThrow();
-    expect(() => subscriptionFields({ ...cases[5].raw, paid_count: 13 }, observedAt)).toThrow();
-    expect(() =>
-      subscriptionFields({ ...cases[5].raw, current_start: Number.MAX_SAFE_INTEGER }, observedAt),
-    ).toThrow();
+      "RAZORPAY_INVALID_RESPONSE",
+    );
+    await expectRazorpayError(
+      Promise.resolve().then(() =>
+        planFields(
+          { ...cases[4].raw, item: { name: "Pro", amount: 69900, currency: "inr" } },
+          observedAt,
+        ),
+      ),
+      "RAZORPAY_INVALID_RESPONSE",
+    );
+    await expectRazorpayError(
+      Promise.resolve().then(() =>
+        subscriptionFields({ ...cases[5].raw, total_count: 1.5 }, observedAt),
+      ),
+      "RAZORPAY_INVALID_RESPONSE",
+    );
+    await expectRazorpayError(
+      Promise.resolve().then(() =>
+        subscriptionFields({ ...cases[5].raw, quantity: 0 }, observedAt),
+      ),
+      "RAZORPAY_INVALID_RESPONSE",
+    );
+    await expectRazorpayError(
+      Promise.resolve().then(() =>
+        subscriptionFields({ ...cases[5].raw, paid_count: 13 }, observedAt),
+      ),
+      "RAZORPAY_INVALID_RESPONSE",
+    );
+    await expectRazorpayError(
+      Promise.resolve().then(() =>
+        subscriptionFields({ ...cases[5].raw, current_start: Number.MAX_SAFE_INTEGER }, observedAt),
+      ),
+      "RAZORPAY_INVALID_RESPONSE",
+    );
   });
 
-  test("collections are bounded and shape checked", () => {
+  test("collections are bounded and shape checked", async () => {
     expect(collectionItems({ entity: "collection", items: [cases[0].raw] })).toHaveLength(1);
-    expect(() => collectionItems({ entity: "wrong", items: [] })).toThrow();
-    expect(() =>
-      collectionItems({ entity: "collection", items: Array.from({ length: 1001 }) }),
-    ).toThrow();
+    await expectRazorpayError(
+      Promise.resolve().then(() => collectionItems({ entity: "wrong", items: [] })),
+      "RAZORPAY_INVALID_RESPONSE",
+    );
+    await expectRazorpayError(
+      Promise.resolve().then(() =>
+        collectionItems({ entity: "collection", items: Array.from({ length: 1001 }) }),
+      ),
+      "RAZORPAY_INVALID_RESPONSE",
+    );
   });
 
   test("unknown statuses and oversized notes are retained without rejecting a signed entity", () => {

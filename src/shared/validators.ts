@@ -1,5 +1,6 @@
 import { v } from "convex/values";
 
+/** Validates the verified webhook event passed to the app callback. */
 export const webhookEventValidator = v.object({
   eventId: v.string(),
   event: v.string(),

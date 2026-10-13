@@ -1,7 +1,7 @@
 import { stubRazorpayEnv, restoreRazorpayTestState } from "../test-helpers.js";
 import { computeHmacSha256Hex } from "../shared/crypto.js";
 import { convexTest } from "convex-test";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api } from "./_generated/api.js";
 import schema from "./schema.js";
 
@@ -53,6 +53,8 @@ const subscription = {
 
 beforeEach(() => {
   stubRazorpayEnv({ webhookSecret: secret });
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(1_567_674_660_000);
 });
 
 afterEach(() => {

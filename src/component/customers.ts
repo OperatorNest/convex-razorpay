@@ -1,6 +1,7 @@
 import { parseProviderResponse } from "../shared/providerErrors.js";
 import { customerFields } from "./mapping.js";
-import { razorpayError } from "../shared/errors.js";
+import { isRazorpayError, razorpayError } from "../shared/errors.js";
+import { isDefinitiveNoCreate, providerErrorCode } from "../shared/providerErrors.js";
 
 import { v } from "convex/values";
 import { action, query } from "./_generated/server.js";
@@ -8,16 +9,27 @@ import { internal } from "./_generated/api.js";
 import schema from "./schema.js";
 import type { Doc } from "./_generated/dataModel.js";
 import type { ActionCtx } from "./_generated/server.js";
-import { assertModeMatches, isTestMode, resolveMode, requestProvider } from "./provider.js";
+import {
+  assertModeMatches,
+  findByIdempotencyKey,
+  readTestMode,
+  requestProvider,
+  resolveProviderMode,
+} from "./provider.js";
 import {
   deterministicTestId,
   linkedNotes,
   omitUndefined,
   record,
   stableStringify,
+  validateNotes,
 } from "../shared/validation.js";
 import { linkArgs, notesArg, validateIdempotencyKey } from "./validators.js";
 import { optionalLinkage } from "./validators.js";
+
+const idempotencyNote = "operatornestIdempotencyKey";
+
+type ProviderMode = { testMode: boolean; isSimulated: boolean };
 
 const createArgs = {
   name: v.string(),
@@ -59,7 +71,7 @@ async function refreshCustomerProfile(
     externalId?: string;
     metadata?: Record<string, string>;
   },
-  testMode: boolean,
+  { testMode, isSimulated }: ProviderMode,
 ): Promise<Doc<"customers">> {
   const changes = {
     name: linked.name !== args.name ? args.name : undefined,
@@ -78,7 +90,7 @@ async function refreshCustomerProfile(
       }),
     });
   let updated: unknown;
-  if (testMode) {
+  if (isSimulated) {
     updated = omitUndefined({
       ...linked.raw,
       id: linked.razorpayCustomerId,
@@ -130,13 +142,19 @@ async function createCustomer(
   },
   getOrCreate: boolean,
 ): Promise<Doc<"customers">> {
-  const testMode = isTestMode(args.testMode);
+  const mode = resolveProviderMode(args.testMode);
+  const { testMode } = mode;
   validateCustomer(args.name, args.email, args.contact);
   validateIdempotencyKey(args.idempotencyKey);
   if (args.gstin && !/^[0-9A-Z]{15}$/.test(args.gstin))
     throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
-  const notes = linkedNotes(args.notes, args.userId, args.externalId, args.metadata);
+  const idempotencyKey = args.idempotencyKey;
+  const notes = validateNotes({
+    ...linkedNotes(args.notes, args.userId, args.externalId, args.metadata),
+    ...(idempotencyKey ? { [idempotencyNote]: idempotencyKey } : {}),
+  });
   const requestFingerprint = stableStringify({
+    testMode,
     name: args.name,
     email: args.email,
     contact: args.contact,
@@ -146,16 +164,15 @@ async function createCustomer(
     externalId: args.externalId,
     metadata: args.metadata,
   });
-  const existing = args.idempotencyKey
-    ? await ctx.runQuery(internal.mutations.customerByKey, { idempotencyKey: args.idempotencyKey })
+  const existing = idempotencyKey
+    ? await ctx.runQuery(internal.mutations.customerByKey, { idempotencyKey, testMode })
     : null;
   if (existing) {
-    assertModeMatches(existing, testMode);
     if (getOrCreate && existing.userId !== args.userId) {
       throw razorpayError("RAZORPAY_CUSTOMER_CONFLICT");
     }
     if (getOrCreate && args.userId) {
-      return refreshCustomerProfile(ctx, existing, args, testMode);
+      return refreshCustomerProfile(ctx, existing, args, mode);
     }
     if (existing.requestFingerprint !== requestFingerprint)
       throw razorpayError("RAZORPAY_IDEMPOTENCY_CONFLICT");
@@ -167,49 +184,97 @@ async function createCustomer(
       testMode,
     });
     if (linked) {
-      assertModeMatches(linked, testMode);
-      if (linked.userId && linked.userId !== args.userId) {
-        throw razorpayError("RAZORPAY_CUSTOMER_CONFLICT");
-      }
-      return refreshCustomerProfile(ctx, linked, args, testMode);
+      return refreshCustomerProfile(ctx, linked, args, mode);
     }
   }
-  const raw = testMode
-    ? {
-        id: await deterministicTestId("cust", [
-          args.idempotencyKey ?? crypto.randomUUID(),
-          args.contact,
-        ]),
-        entity: "customer",
-        name: args.name,
-        email: args.email,
-        contact: args.contact,
-        gstin: args.gstin,
-        notes,
-        created_at: Math.floor(Date.now() / 1000),
-      }
-    : await requestProvider("POST", "/customers", {
-        body: {
-          name: args.name,
-          email: args.email,
-          contact: args.contact,
-          gstin: args.gstin,
-          notes,
-          fail_existing: getOrCreate ? "0" : "1",
-        },
-      });
-  return ctx.runMutation(internal.mutations.putCustomer, {
-    raw: omitUndefined(raw),
-    observedAt: Date.now(),
-    ...optionalLinkage({
-      userId: args.userId,
-      externalId: args.externalId,
-      metadata: args.metadata,
+  let shouldReconcile = false;
+  if (idempotencyKey) {
+    const claim = await ctx.runMutation(internal.idempotency.claim, {
+      resource: "customer",
+      idempotencyKey,
       requestFingerprint,
-      idempotencyKey: args.idempotencyKey,
       testMode,
-    }),
-  });
+    });
+    if (claim === "completed") {
+      const razorpayCustomerId = await ctx.runQuery(internal.idempotency.findClaimedEntityId, {
+        resource: "customer",
+        idempotencyKey,
+        testMode,
+      });
+      const claimed =
+        razorpayCustomerId === null
+          ? null
+          : await ctx.runQuery(internal.lookup.customer, { id: razorpayCustomerId });
+      if (!claimed) throw razorpayError("RAZORPAY_NOT_FOUND");
+      assertModeMatches(claimed, testMode);
+      return claimed;
+    }
+    shouldReconcile = claim === "reconcile";
+  }
+  const failClaim = async (error: unknown) => {
+    if (
+      idempotencyKey &&
+      (isDefinitiveNoCreate(error) ||
+        (isRazorpayError(error) && error.data.code === "RAZORPAY_CUSTOMER_CONFLICT"))
+    )
+      await ctx.runMutation(internal.idempotency.fail, {
+        resource: "customer",
+        idempotencyKey,
+        requestFingerprint,
+        testMode,
+        errorCode: providerErrorCode(error),
+      });
+  };
+  let raw: unknown;
+  if (mode.isSimulated) {
+    raw = {
+      id: await deterministicTestId("cust", [idempotencyKey ?? crypto.randomUUID(), args.contact]),
+      entity: "customer",
+      name: args.name,
+      email: args.email,
+      contact: args.contact,
+      gstin: args.gstin,
+      notes,
+      created_at: Math.floor(Date.now() / 1000),
+    };
+  } else {
+    if (shouldReconcile && idempotencyKey)
+      raw = await findByIdempotencyKey("customer", idempotencyKey);
+    if (raw === undefined) {
+      try {
+        raw = await requestProvider("POST", "/customers", {
+          body: {
+            name: args.name,
+            email: args.email,
+            contact: args.contact,
+            gstin: args.gstin,
+            notes,
+            fail_existing: getOrCreate ? "0" : "1",
+          },
+        });
+      } catch (error) {
+        await failClaim(error);
+        throw error;
+      }
+    }
+  }
+  try {
+    return await ctx.runMutation(internal.mutations.putCustomer, {
+      raw: omitUndefined(raw),
+      observedAt: Date.now(),
+      ...optionalLinkage({
+        userId: args.userId,
+        externalId: args.externalId,
+        metadata: args.metadata,
+        requestFingerprint,
+        idempotencyKey,
+        testMode,
+      }),
+    });
+  } catch (error) {
+    await failClaim(error);
+    throw error;
+  }
 }
 
 export const create = action({
@@ -230,7 +295,8 @@ export const fetch = action({
     ctx,
     { razorpayCustomerId, testMode },
   ): Promise<Omit<Doc<"customers">, "_id" | "_creationTime">> => {
-    if (isTestMode(testMode)) {
+    const mode = resolveProviderMode(testMode);
+    if (mode.isSimulated) {
       const local = await ctx.runQuery(internal.lookup.customer, { id: razorpayCustomerId });
       if (!local) throw razorpayError("RAZORPAY_NOT_FOUND");
       assertModeMatches(local, true);
@@ -246,7 +312,7 @@ export const fetch = action({
     );
     if (parseProviderResponse(() => record(raw)).id !== razorpayCustomerId)
       throw razorpayError("RAZORPAY_INVALID_RESPONSE");
-    return { ...customerFields(raw, Date.now()), testMode: false };
+    return { ...customerFields(raw, Date.now()), testMode: mode.testMode };
   },
 });
 
@@ -266,10 +332,10 @@ export const edit = action({
     if (args.name !== undefined) validateCustomerName(args.name);
     if (args.email !== undefined) validateCustomerEmail(args.email);
     if (args.contact !== undefined) validateCustomerContact(args.contact);
-    const testMode = isTestMode(args.testMode);
+    const { testMode, isSimulated } = resolveProviderMode(args.testMode);
     if (existing) assertModeMatches(existing, testMode);
     let raw: unknown;
-    if (testMode) {
+    if (isSimulated) {
       if (!existing) throw razorpayError("RAZORPAY_NOT_FOUND");
       raw = {
         ...existing.raw,
@@ -305,7 +371,7 @@ export const get = query({
     ctx.db
       .query("customers")
       .withIndex("by_userId_and_testMode", (q) =>
-        q.eq("userId", userId).eq("testMode", resolveMode(testMode)),
+        q.eq("userId", userId).eq("testMode", readTestMode(testMode)),
       )
       .first(),
 });

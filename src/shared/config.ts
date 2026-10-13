@@ -1,7 +1,8 @@
-import { wellFormed } from "../shared/validation.js";
-import { razorpayError } from "../shared/errors.js";
+import { wellFormed } from "./validation.js";
+import { razorpayError } from "./errors.js";
 
-type ComponentEnv = {
+/** Lists the Razorpay environment variables the component reads. */
+export type ComponentEnv = {
   RAZORPAY_KEY_ID?: string;
   RAZORPAY_KEY_SECRET?: string;
   RAZORPAY_WEBHOOK_SECRET?: string;
@@ -9,6 +10,7 @@ type ComponentEnv = {
   RAZORPAY_TEST_MODE?: string;
 };
 
+/** Reads and validates the Razorpay environment variables. */
 export function readConfig(env: ComponentEnv) {
   for (const value of [
     env.RAZORPAY_KEY_ID,
@@ -37,11 +39,30 @@ export function readConfig(env: ComponentEnv) {
     keySecret: env.RAZORPAY_KEY_SECRET,
     webhookSecret: env.RAZORPAY_WEBHOOK_SECRET,
     previousWebhookSecret: env.RAZORPAY_WEBHOOK_SECRET_PREVIOUS,
-    testMode: env.RAZORPAY_TEST_MODE === "true",
   };
 }
 
+/** Returns a configured value or throws `RAZORPAY_NOT_CONFIGURED`. */
 export function requireConfigValue(value: string | undefined): string {
   if (value === undefined) throw razorpayError("RAZORPAY_NOT_CONFIGURED");
   return value;
+}
+
+// shared-block:begin
+/** Returns true when the caller requests test mode or `RAZORPAY_TEST_MODE` is `"true"`; the request can enable test mode and cannot disable it. */
+export function resolveTestMode(requested: boolean | undefined, env: ComponentEnv): boolean {
+  return requested === true || env.RAZORPAY_TEST_MODE === "true";
+}
+// shared-block:end
+
+/** Returns `resolveTestMode` or true for an `rzp_test_` key ID, because Razorpay defines its Test Mode by test keys; throws `RAZORPAY_LIVE_KEY_TEST_MODE` for an `rzp_live_` key in test mode. */
+export function resolveRazorpayTestMode(
+  requested: boolean | undefined,
+  env: ComponentEnv,
+): boolean {
+  const { keyId } = readConfig(env);
+  const testMode = resolveTestMode(requested, env) || keyId?.startsWith("rzp_test_") === true;
+  if (testMode && keyId?.startsWith("rzp_live_") === true)
+    throw razorpayError("RAZORPAY_LIVE_KEY_TEST_MODE");
+  return testMode;
 }

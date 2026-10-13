@@ -2,7 +2,13 @@ import { httpRouter } from "convex/server";
 import { ConvexError } from "convex/values";
 import { describe, expect, expectTypeOf, test, vi } from "vitest";
 import { components, internal } from "../../example/convex/_generated/api.js";
-import { Razorpay, buildCheckoutOptions, isRazorpayError, registerRoutes } from "./index.js";
+import {
+  Razorpay,
+  buildCheckoutOptions,
+  isRazorpayError,
+  registerRoutes,
+  webhookEventValidator,
+} from "./index.js";
 
 vi.mock("convex/server", async (importOriginal) => ({
   ...(await importOriginal<typeof import("convex/server")>()),
@@ -173,11 +179,14 @@ test("every public client method delegates to its component function", async () 
   ]);
 });
 
-test("undefined test mode is omitted and a missing Checkout key stays absent", async () => {
+test("an omitted test mode is passed as undefined and a missing Checkout key stays undefined", async () => {
   const client = new Razorpay(components.razorpay);
   const ctx = mockContext();
   await client.orders.fetch(ctx, { razorpayOrderId: "order_1" });
-  expect(ctx.runAction.mock.calls[0]?.[1]).not.toHaveProperty("testMode");
+  expect(Object.entries(ctx.runAction.mock.calls[0]?.[1] ?? {})).toContainEqual([
+    "testMode",
+    undefined,
+  ]);
   expect(
     buildCheckoutOptions({ razorpayOrderId: "order_1", amount: 50000, currency: "INR" }),
   ).toEqual({
@@ -187,10 +196,22 @@ test("undefined test mode is omitted and a missing Checkout key stays absent", a
   });
 });
 
+test("the package exports the webhook event validator that app callbacks declare as args", () => {
+  expect(webhookEventValidator.kind).toBe("object");
+  expect(Object.keys(webhookEventValidator.fields).toSorted()).toEqual([
+    "event",
+    "eventId",
+    "providerCreatedAt",
+    "razorpayAccountId",
+    "razorpayEntityId",
+  ]);
+});
+
 test("typed Razorpay errors retain their ConvexError data", async () => {
   const error = new ConvexError({
     code: "RAZORPAY_PROVIDER_ERROR",
     message: "Razorpay returned a failure response.",
+    retryable: true,
   });
   expect(isRazorpayError(error)).toBe(true);
   expect(isRazorpayError(new ConvexError({ code: "OTHER", message: "Other" }))).toBe(false);

@@ -1,9 +1,9 @@
 import { parseProviderResponse } from "../shared/providerErrors.js";
-import { paginationOptsValidator } from "convex/server";
-import { boundedPage } from "./pagination.js";
+import { paginationOptsValidator, paginationResultValidator } from "convex/server";
+import { boundedPage } from "../shared/bounds.js";
 import { paginator } from "convex-helpers/server/pagination";
 import { paymentFields } from "./mapping.js";
-import { razorpayError } from "../shared/errors.js";
+import { isRazorpayError, razorpayError } from "../shared/errors.js";
 
 import { v } from "convex/values";
 import { action, query } from "./_generated/server.js";
@@ -13,13 +13,13 @@ import type { Doc } from "./_generated/dataModel.js";
 import { collectionItems } from "./mapping.js";
 import {
   assertModeMatches,
-  isTestMode,
-  resolveMode,
   listPath,
+  readTestMode,
   requestProvider,
+  resolveProviderMode,
 } from "./provider.js";
 import { pageArgs, validateAmount, validateCurrency, validatePage } from "./validators.js";
-import { record } from "../shared/validation.js";
+import { isRecord, record } from "../shared/validation.js";
 
 export const fetch = action({
   args: { razorpayPaymentId: v.string(), testMode: v.optional(v.boolean()) },
@@ -28,7 +28,8 @@ export const fetch = action({
     ctx,
     { razorpayPaymentId, testMode },
   ): Promise<Omit<Doc<"payments">, "_id" | "_creationTime">> => {
-    if (isTestMode(testMode)) {
+    const mode = resolveProviderMode(testMode);
+    if (mode.isSimulated) {
       const local = await ctx.runQuery(internal.lookup.payment, { id: razorpayPaymentId });
       if (!local) throw razorpayError("RAZORPAY_NOT_FOUND");
       assertModeMatches(local, true);
@@ -40,7 +41,7 @@ export const fetch = action({
     });
     if (parseProviderResponse(() => record(raw)).id !== razorpayPaymentId)
       throw razorpayError("RAZORPAY_INVALID_RESPONSE");
-    return { ...paymentFields(raw, Date.now()), testMode: false };
+    return { ...paymentFields(raw, Date.now()), testMode: mode.testMode };
   },
 });
 
@@ -55,7 +56,8 @@ export const capture = action({
   handler: async (ctx, args): Promise<Doc<"payments">> => {
     validateAmount(args.amount);
     validateCurrency(args.currency);
-    if (isTestMode(args.testMode)) {
+    const { testMode, isSimulated } = resolveProviderMode(args.testMode);
+    if (isSimulated) {
       const existing = await ctx.runQuery(internal.lookup.payment, { id: args.razorpayPaymentId });
       if (!existing) throw razorpayError("RAZORPAY_NOT_FOUND");
       assertModeMatches(existing, true);
@@ -81,16 +83,37 @@ export const capture = action({
         testMode: true,
       });
     }
-    const raw = await requestProvider(
-      "POST",
-      `/payments/${encodeURIComponent(args.razorpayPaymentId)}/capture`,
-      {
+    const paymentPath = `/payments/${encodeURIComponent(args.razorpayPaymentId)}`;
+    let raw: unknown;
+    try {
+      raw = await requestProvider("POST", `${paymentPath}/capture`, {
         body: { amount: args.amount, currency: args.currency },
-      },
-    );
+      });
+    } catch (error) {
+      if (
+        !isRazorpayError(error) ||
+        error.data.providerStatus === undefined ||
+        error.data.providerStatus < 400 ||
+        error.data.providerStatus >= 500
+      )
+        throw error;
+      const current = await requestProvider("GET", paymentPath, { idempotent: true });
+      if (
+        !isRecord(current) ||
+        current.status !== "captured" ||
+        current.amount !== args.amount ||
+        current.currency !== args.currency
+      )
+        throw error;
+      raw = current;
+    }
     if (parseProviderResponse(() => record(raw)).id !== args.razorpayPaymentId)
       throw razorpayError("RAZORPAY_INVALID_RESPONSE");
-    return ctx.runMutation(internal.mutations.putPayment, { raw, observedAt: Date.now() });
+    return ctx.runMutation(internal.mutations.putPayment, {
+      raw,
+      observedAt: Date.now(),
+      testMode,
+    });
   },
 });
 
@@ -99,14 +122,17 @@ export const fetchAll = action({
   returns: v.array(v.object(schema.tables.payments.validator.fields)),
   handler: async (ctx, args): Promise<Omit<Doc<"payments">, "_id" | "_creationTime">[]> => {
     const { count, skip } = validatePage(args.count, args.skip);
-    if (isTestMode(args.testMode))
+    const mode = resolveProviderMode(args.testMode);
+    if (mode.isSimulated)
       return (
         await ctx.runQuery(internal.lookup.paymentsPage, { count, skip, testMode: true })
       ).map(({ _id, _creationTime, ...entity }) => entity);
     const items = collectionItems(
       await requestProvider("GET", listPath("/payments", count, skip), { idempotent: true }),
     );
-    return items.map((raw) => Object.assign(paymentFields(raw, Date.now()), { testMode: false }));
+    return items.map((raw) =>
+      Object.assign(paymentFields(raw, Date.now()), { testMode: mode.testMode }),
+    );
   },
 });
 
@@ -116,19 +142,13 @@ export const list = query({
     paginationOpts: paginationOptsValidator,
     testMode: v.optional(v.boolean()),
   },
-  returns: v.object({
-    page: v.array(schema.doc("payments")),
-    isDone: v.boolean(),
-    continueCursor: v.string(),
-  }),
+  returns: paginationResultValidator(schema.doc("payments")),
   handler: (ctx, { razorpayOrderId, paginationOpts, testMode }) =>
-    boundedPage(
-      paginator(ctx.db, schema)
-        .query("payments")
-        .withIndex("by_razorpayOrderId_and_testMode", (q) =>
-          q.eq("razorpayOrderId", razorpayOrderId).eq("testMode", resolveMode(testMode)),
-        )
-        .order("desc"),
-      paginationOpts,
-    ),
+    paginator(ctx.db, schema)
+      .query("payments")
+      .withIndex("by_razorpayOrderId_and_testMode", (q) =>
+        q.eq("razorpayOrderId", razorpayOrderId).eq("testMode", readTestMode(testMode)),
+      )
+      .order("desc")
+      .paginate(boundedPage(paginationOpts)),
 });

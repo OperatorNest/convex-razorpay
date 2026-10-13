@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { expectRazorpayError } from "../test-helpers.js";
 import {
   collectionItems,
   customerFields,
@@ -42,16 +43,12 @@ const subscription = {
   status: "created",
 };
 
-function invalidResponse(run: () => unknown) {
-  expect(run).toThrowError(
-    expect.objectContaining({
-      data: expect.objectContaining({ code: "RAZORPAY_INVALID_RESPONSE" }),
-    }),
-  );
+function expectInvalidResponse(run: () => unknown): Promise<void> {
+  return expectRazorpayError(Promise.resolve().then(run), "RAZORPAY_INVALID_RESPONSE");
 }
 
 describe("provider mapping optionals and authority checks", () => {
-  test("all entities reject missing or empty ids and malformed observations", () => {
+  test("all entities reject missing or empty ids and malformed observations", async () => {
     const fixtures = [
       [orderFields, order],
       [paymentFields, payment],
@@ -61,14 +58,16 @@ describe("provider mapping optionals and authority checks", () => {
       [subscriptionFields, subscription],
     ] as const;
     for (const [parse, raw] of fixtures) {
-      invalidResponse(() => parse(null, now));
-      invalidResponse(() => parse({ ...raw, id: "" }, now));
-      invalidResponse(() => parse({ ...raw, id: raw.id.slice(0, raw.id.indexOf("_") + 1) }, now));
-      invalidResponse(() => parse(raw, -1));
+      await expectInvalidResponse(() => parse(null, now));
+      await expectInvalidResponse(() => parse({ ...raw, id: "" }, now));
+      await expectInvalidResponse(() =>
+        parse({ ...raw, id: raw.id.slice(0, raw.id.indexOf("_") + 1) }, now),
+      );
+      await expectInvalidResponse(() => parse(raw, -1));
     }
   });
 
-  test("order fills absent counters, retains unknown status, and rejects inconsistent totals", () => {
+  test("order fills absent counters, retains unknown status, and rejects inconsistent totals", async () => {
     expect(orderFields(order, now)).toMatchObject({
       amountPaid: 0,
       amountDue: 1000,
@@ -90,10 +89,10 @@ describe("provider mapping optionals and authority checks", () => {
       { ...order, receipt: 3 },
       { ...order, attempts: -1 },
     ])
-      invalidResponse(() => orderFields(raw, now));
+      await expectInvalidResponse(() => orderFields(raw, now));
   });
 
-  test("payment retains valid optional provider fields and rejects contradictory authority", () => {
+  test("payment retains valid optional provider fields and rejects contradictory authority", async () => {
     const rich = paymentFields(
       {
         ...payment,
@@ -159,10 +158,10 @@ describe("provider mapping optionals and authority checks", () => {
       { ...payment, fee: -1 },
       { ...payment, tax: 1.2 },
     ])
-      invalidResponse(() => paymentFields(raw, now));
+      await expectInvalidResponse(() => paymentFields(raw, now));
   });
 
-  test("refund, customer, and plan preserve valid optional fields", () => {
+  test("refund, customer, and plan preserve valid optional fields", async () => {
     expect(
       refundFields(
         {
@@ -211,23 +210,23 @@ describe("provider mapping optionals and authority checks", () => {
       { ...refund, speed_requested: 1 },
       { ...refund, receipt: 1 },
     ])
-      invalidResponse(() => refundFields(raw, now));
+      await expectInvalidResponse(() => refundFields(raw, now));
     for (const raw of [
       { ...customer, name: 1 },
       { ...customer, email: 1 },
       { ...customer, contact: 1 },
       { ...customer, gstin: 1 },
     ])
-      invalidResponse(() => customerFields(raw, now));
+      await expectInvalidResponse(() => customerFields(raw, now));
     for (const raw of [
       { ...plan, period: "hourly" },
       { ...plan, period: "daily", interval: 1 },
       { ...plan, item: [] },
     ])
-      invalidResponse(() => planFields(raw, now));
+      await expectInvalidResponse(() => planFields(raw, now));
   });
 
-  test("subscription validates counts, optional ids, times, and flags", () => {
+  test("subscription validates counts, optional ids, times, and flags", async () => {
     const rich = subscriptionFields(
       {
         ...subscription,
@@ -284,10 +283,10 @@ describe("provider mapping optionals and authority checks", () => {
       { ...subscription, has_scheduled_changes: "true" },
       { ...subscription, short_url: 1 },
     ])
-      invalidResponse(() => subscriptionFields(raw, now));
+      await expectInvalidResponse(() => subscriptionFields(raw, now));
   });
 
-  test("collection requires an array no longer than the provider bound", () => {
+  test("collection requires an array no longer than the provider bound", async () => {
     expect(collectionItems({ entity: "collection", items: [] })).toEqual([]);
     for (const raw of [
       null,
@@ -295,6 +294,6 @@ describe("provider mapping optionals and authority checks", () => {
       { entity: "collection", items: {} },
       { entity: "collection", items: Array.from({ length: 1001 }) },
     ])
-      invalidResponse(() => collectionItems(raw));
+      await expectInvalidResponse(() => collectionItems(raw));
   });
 });

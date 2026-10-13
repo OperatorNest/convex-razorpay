@@ -1,5 +1,6 @@
 import { ConvexError } from "convex/values";
 import { expect, test } from "vitest";
+import { expectRazorpayError } from "../test-helpers.js";
 import { isRazorpayError, razorpayError } from "./errors.js";
 import {
   classifyProviderError,
@@ -17,6 +18,7 @@ test("error factories select one fixed message per code", () => {
   expect(
     isRazorpayError(
       razorpayError("RAZORPAY_PROVIDER_ERROR", {
+        retryable: true,
         providerStatus: 503,
         providerCode: "SERVER_ERROR",
       }),
@@ -47,46 +49,41 @@ test("the error guard validates every public field and rejects undeclared fields
 test.each([400, 401, 404, 409, 429, 500, 503])(
   "HTTP %i classifies outcome without exposing provider descriptions",
   (status) => {
-    const data = classifyProviderError(status, {
+    const error = classifyProviderError(status, {
       error: { code: "PROVIDER_CODE", description: "private account value" },
     });
-    expect(data).toEqual({
+    expect(error.data).toEqual({
       code: "RAZORPAY_PROVIDER_ERROR",
       message: "Razorpay returned a failure response.",
       retryable: status >= 500 || [409, 429].includes(status),
       providerStatus: status,
       providerCode: "PROVIDER_CODE",
     });
-    expect(isDefinitiveNoCreate(new ConvexError(data))).toBe(
-      status < 500 && ![409, 429].includes(status),
-    );
+    expect(isDefinitiveNoCreate(error)).toBe(status < 500 && ![409, 429].includes(status));
   },
 );
 
-test("provider classification handles absent fields, concurrency and Unicode boundaries", () => {
-  expect(classifyProviderError(503, null)).toEqual({
+test("provider classification handles absent fields, concurrency and Unicode boundaries", async () => {
+  expect(classifyProviderError(503, null).data).toEqual({
     code: "RAZORPAY_PROVIDER_ERROR",
     message: "Razorpay returned a failure response.",
     retryable: true,
     providerStatus: 503,
   });
   expect(
-    classifyProviderError(400, { error: { description: "Concurrent operation in progress" } }).code,
-  ).toBe("RAZORPAY_PROVIDER_ERROR");
-  expect(classifyProviderError(503, { error: { code: "x".repeat(63) + "😀" } }).providerCode).toBe(
-    "x".repeat(63),
-  );
+    classifyProviderError(400, { error: { description: "Concurrent operation in progress" } }).data
+      .retryable,
+  ).toBe(true);
+  expect(
+    classifyProviderError(503, { error: { code: "x".repeat(63) + "😀" } }).data.providerCode,
+  ).toBe("x".repeat(63));
   expect(providerErrorCode(new Error("unknown"))).toBe("RAZORPAY_PROVIDER_ERROR");
   expect(providerErrorCode(razorpayError("RAZORPAY_NOT_FOUND"))).toBe("RAZORPAY_NOT_FOUND");
   expect(getOrThrow(0)).toBe(0);
   expect(getOrThrow(false)).toBe(false);
   for (const value of [null, undefined])
-    expect(() => getOrThrow(value)).toThrowError(
-      expect.objectContaining({
-        data: {
-          code: "RAZORPAY_INVALID_RESPONSE",
-          message: "The provider response is invalid or a required mirror is missing.",
-        },
-      }),
+    await expectRazorpayError(
+      Promise.resolve().then(() => getOrThrow(value)),
+      "RAZORPAY_INVALID_RESPONSE",
     );
 });

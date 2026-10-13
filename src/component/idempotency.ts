@@ -1,9 +1,9 @@
 import { razorpayError } from "../shared/errors.js";
 
 import { v } from "convex/values";
-import { internalMutation } from "./_generated/server.js";
+import { internalMutation, internalQuery } from "./_generated/server.js";
 import schema from "./schema.js";
-import { resolveMode } from "./provider.js";
+import { readTestMode } from "./provider.js";
 
 const staleAfterMs = 10 * 60_000;
 
@@ -23,7 +23,7 @@ export const claim = internalMutation({
       .withIndex("by_resource_and_testMode_and_idempotencyKey", (q) =>
         q
           .eq("resource", args.resource)
-          .eq("testMode", resolveMode(args.testMode))
+          .eq("testMode", args.testMode)
           .eq("idempotencyKey", args.idempotencyKey),
       )
       .unique();
@@ -73,7 +73,7 @@ export const fail = internalMutation({
       .withIndex("by_resource_and_testMode_and_idempotencyKey", (q) =>
         q
           .eq("resource", args.resource)
-          .eq("testMode", resolveMode(args.testMode))
+          .eq("testMode", args.testMode)
           .eq("idempotencyKey", args.idempotencyKey),
       )
       .unique();
@@ -104,12 +104,33 @@ export const release = internalMutation({
       .withIndex("by_resource_and_testMode_and_idempotencyKey", (q) =>
         q
           .eq("resource", args.resource)
-          .eq("testMode", resolveMode(args.testMode))
+          .eq("testMode", readTestMode(args.testMode))
           .eq("idempotencyKey", args.idempotencyKey),
       )
       .unique();
     if (!existingClaim || existingClaim.status === "completed") return false;
     await ctx.db.delete("idempotencyRequests", existingClaim["_id"]);
     return true;
+  },
+});
+
+export const findClaimedEntityId = internalQuery({
+  args: {
+    resource: resourceValidator,
+    idempotencyKey: v.string(),
+    testMode: v.boolean(),
+  },
+  returns: v.union(v.string(), v.null()),
+  handler: async (ctx, args) => {
+    const existingClaim = await ctx.db
+      .query("idempotencyRequests")
+      .withIndex("by_resource_and_testMode_and_idempotencyKey", (q) =>
+        q
+          .eq("resource", args.resource)
+          .eq("testMode", args.testMode)
+          .eq("idempotencyKey", args.idempotencyKey),
+      )
+      .unique();
+    return existingClaim?.status === "completed" ? (existingClaim.razorpayEntityId ?? null) : null;
   },
 });

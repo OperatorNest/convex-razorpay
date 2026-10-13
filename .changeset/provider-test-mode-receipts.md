@@ -1,0 +1,19 @@
+---
+"@operatornest/convex-razorpay": minor
+---
+
+- Breaking: test mode is also enabled by an `rzp_test_` key ID and calls Razorpay's test API; local simulation runs only in test mode without `RAZORPAY_KEY_ID`.
+- Breaking: the public `webhooks.cleanup` mutation is removed; retention cleanup runs only from the internal cron.
+- Breaking: Checkout signature failures raise `RAZORPAY_INVALID_PAYMENT_SIGNATURE` instead of `RAZORPAY_INVALID_ARGUMENT`.
+- Breaking: signed events older than webhook retention minus one day are recorded as failed receipts with `RAZORPAY_STALE_WEBHOOK` and acknowledged with 200 without invoking onEvent.
+- Breaking: refunds and customers add `by_idempotencyKey_and_testMode` indexes, and claims accept the `customer` resource.
+- Breaking: order and plan amounts below 100 are accepted; only non-positive amounts are rejected.
+- Keyed customer creates claim the key, send the `operatornestIdempotencyKey` note and reconcile by listing provider customers.
+- Subscription provider operation responses cannot revive a terminal status or lower paidCount.
+- A capture 4xx returns the payment when a fetch shows it captured with the requested amount and currency.
+- A simulated duplicate receipt is not retryable and leaves the keyed claim failed.
+- The package exports `webhookEventValidator` for app webhook callback args.
+- Breaking: `isRazorpayError` rejects `RAZORPAY_PROVIDER_ERROR` and `RAZORPAY_NETWORK_ERROR` data without a boolean `retryable`; `RAZORPAY_NETWORK_ERROR` always carries `retryable: true`.
+- The package exports the `QueryContext`, `MutationContext` and `ActionContext` types that client methods accept.
+- Client methods pass omitted optional arguments to component functions as `undefined` fields.
+- `buildCheckoutOptions` returns every Checkout field, with `undefined` for omitted options and for the key of simulated orders.

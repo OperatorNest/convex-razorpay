@@ -1,27 +1,21 @@
-import { readConfig, requireConfigValue } from "./config.js";
+import { readConfig, requireConfigValue, resolveRazorpayTestMode } from "../shared/config.js";
 import { razorpayError } from "../shared/errors.js";
 import { classifyProviderError } from "../shared/providerErrors.js";
 import { env } from "./_generated/server.js";
 import { collectionItems } from "./mapping.js";
 import { isRecord } from "../shared/validation.js";
 
-export function resolveMode(requested?: boolean): boolean {
-  const config = readConfig(env);
-  const enabled = requested === true || config.testMode;
-  if (enabled && config.keyId?.startsWith("rzp_live_")) {
-    throw razorpayError("RAZORPAY_LIVE_KEY_TEST_MODE");
-  }
-  return enabled;
+export function readTestMode(option?: boolean): boolean {
+  return resolveRazorpayTestMode(option, env);
 }
 
-export function isTestMode(requested?: boolean): boolean {
-  const enabled = resolveMode(requested);
+export function resolveProviderMode(option?: boolean): { testMode: boolean; isSimulated: boolean } {
+  const testMode = resolveRazorpayTestMode(option, env);
   const config = readConfig(env);
-  if (!enabled) {
-    requireConfigValue(config.keyId);
-    requireConfigValue(config.keySecret);
-  }
-  return enabled;
+  if (testMode && config.keyId === undefined) return { testMode, isSimulated: true };
+  requireConfigValue(config.keyId);
+  requireConfigValue(config.keySecret);
+  return { testMode, isSimulated: false };
 }
 
 export function assertModeMatches(row: { testMode: boolean }, testMode: boolean): void {
@@ -55,7 +49,7 @@ export async function requestProvider(
     try {
       response = await fetch(`https://api.razorpay.com/v1${path}`, init);
     } catch {
-      throw razorpayError("RAZORPAY_NETWORK_ERROR");
+      throw razorpayError("RAZORPAY_NETWORK_ERROR", { retryable: true });
     }
     try {
       body = await response.json();
@@ -67,12 +61,7 @@ export async function requestProvider(
     clearTimeout(timeout);
   }
   if (!response.ok) {
-    const error = classifyProviderError(response.status, body);
-    throw razorpayError(error.code, {
-      providerStatus: response.status,
-      retryable: error.retryable,
-      ...(error.providerCode === undefined ? {} : { providerCode: error.providerCode }),
-    });
+    throw classifyProviderError(response.status, body);
   }
   return body;
 }
@@ -84,13 +73,20 @@ export function listPath(path: string, count?: number, skip?: number): string {
   return `${path}?${search.toString()}`;
 }
 
+const providerCollectionPaths = {
+  order: "/orders",
+  plan: "/plans",
+  subscription: "/subscriptions",
+  customer: "/customers",
+} as const;
+
 export async function findByIdempotencyKey(
-  resource: "order" | "plan" | "subscription",
+  resource: "order" | "plan" | "subscription" | "customer",
   idempotencyKey: string,
   receipt?: string,
 ): Promise<Record<string, unknown>> {
   const pageSize = 100;
-  const path = resource === "order" ? "/orders" : resource === "plan" ? "/plans" : "/subscriptions";
+  const path = providerCollectionPaths[resource];
   const filter = resource === "order" && receipt ? `&receipt=${encodeURIComponent(receipt)}` : "";
   for (let page = 0; page < 20; page++) {
     const response = await requestProvider(

@@ -4,9 +4,13 @@ import {
   type RazorpayErrorCode,
   type RazorpayErrorData,
 } from "./errors.js";
-import { isRecord, truncateText } from "./validation.js";
+import type { ConvexError } from "convex/values";
+import { isRecord } from "./validation.js";
 
-export function classifyProviderError(statusCode: number, body: unknown): RazorpayErrorData {
+export function classifyProviderError(
+  statusCode: number,
+  body: unknown,
+): ConvexError<RazorpayErrorData> {
   const fields = isRecord(body) && isRecord(body.error) ? body.error : {};
   const concurrent =
     typeof fields.description === "string" &&
@@ -17,15 +21,11 @@ export function classifyProviderError(statusCode: number, body: unknown): Razorp
     statusCode !== 409 &&
     statusCode !== 429 &&
     !concurrent;
-  const code = "RAZORPAY_PROVIDER_ERROR";
-  const providerCode = typeof fields.code === "string" ? truncateText(fields.code, 64) : undefined;
-  return {
-    code,
-    message: razorpayError(code).data.message,
+  return razorpayError("RAZORPAY_PROVIDER_ERROR", {
     retryable: !definitive,
     providerStatus: statusCode,
-    ...(providerCode === undefined ? {} : { providerCode }),
-  };
+    providerCode: typeof fields.code === "string" ? fields.code : undefined,
+  });
 }
 
 export function providerErrorCode(error: unknown): RazorpayErrorCode {

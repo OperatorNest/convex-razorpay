@@ -8,7 +8,7 @@ import { internal } from "./_generated/api.js";
 import schema from "./schema.js";
 import type { Doc } from "./_generated/dataModel.js";
 import { computeSha256Hex } from "../shared/crypto.js";
-import { assertModeMatches, isTestMode, requestProvider } from "./provider.js";
+import { assertModeMatches, requestProvider, resolveProviderMode } from "./provider.js";
 import { deterministicTestId, linkedNotes, record } from "../shared/validation.js";
 import {
   linkArgs,
@@ -30,7 +30,7 @@ export const create = action({
   },
   returns: schema.doc("refunds"),
   handler: async (ctx, args): Promise<Doc<"refunds">> => {
-    const testMode = isTestMode(args.testMode);
+    const { testMode, isSimulated } = resolveProviderMode(args.testMode);
     validateAmount(args.amount);
     validateReceipt(args.receipt);
     const idempotencyKey =
@@ -47,14 +47,17 @@ export const create = action({
       args.receipt,
       Object.entries(notes).toSorted(([a], [b]) => a.localeCompare(b)),
     ]);
-    const existing = await ctx.runQuery(internal.mutations.refundByKey, { idempotencyKey });
+    const existing = await ctx.runQuery(internal.mutations.refundByKey, {
+      idempotencyKey,
+      testMode,
+    });
     if (existing) {
       assertModeMatches(existing, testMode);
       if (existing.requestFingerprint !== requestFingerprint)
         throw razorpayError("RAZORPAY_IDEMPOTENCY_CONFLICT");
       return existing;
     }
-    if (testMode) {
+    if (isSimulated) {
       return ctx.runMutation(internal.mutations.putTestRefund, {
         razorpayRefundId: await deterministicTestId("rfnd", [
           idempotencyKey,
@@ -95,7 +98,7 @@ export const create = action({
         ...args,
         idempotencyKey,
         requestFingerprint,
-        testMode: false,
+        testMode,
       }),
     });
   },
@@ -108,7 +111,8 @@ export const fetch = action({
     ctx,
     { razorpayRefundId, testMode },
   ): Promise<Omit<Doc<"refunds">, "_id" | "_creationTime">> => {
-    if (isTestMode(testMode)) {
+    const mode = resolveProviderMode(testMode);
+    if (mode.isSimulated) {
       const local = await ctx.runQuery(internal.lookup.refund, { id: razorpayRefundId });
       if (!local) throw razorpayError("RAZORPAY_NOT_FOUND");
       assertModeMatches(local, true);
@@ -120,6 +124,6 @@ export const fetch = action({
     });
     if (parseProviderResponse(() => record(raw)).id !== razorpayRefundId)
       throw razorpayError("RAZORPAY_INVALID_RESPONSE");
-    return { ...refundFields(raw, Date.now()), testMode: false };
+    return { ...refundFields(raw, Date.now()), testMode: mode.testMode };
   },
 });

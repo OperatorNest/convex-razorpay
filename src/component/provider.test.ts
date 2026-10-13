@@ -1,6 +1,13 @@
-import { stubRazorpayEnv, restoreRazorpayTestState } from "../test-helpers.js";
+import {
+  stubRazorpayEnv,
+  restoreRazorpayTestState,
+  expectRazorpayError,
+  expectRazorpayErrorDetails,
+  required,
+  stubFetch,
+} from "../test-helpers.js";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { isTestMode, requestProvider } from "./provider.js";
+import { requestProvider, resolveProviderMode } from "./provider.js";
 import { isRazorpayError } from "../shared/errors.js";
 
 import { validatePage } from "./validators.js";
@@ -14,17 +21,11 @@ afterEach(() => {
 });
 
 test("REST helper uses platform fetch, Basic auth, and JSON body", async () => {
-  const fetch = vi.fn(
-    async (_url: string, _init: RequestInit) =>
-      new Response(JSON.stringify({ id: "order_1" }), { status: 200 }),
-  );
-  vi.stubGlobal("fetch", fetch);
+  const calls = stubFetch(() => new Response(JSON.stringify({ id: "order_1" }), { status: 200 }));
   expect(
     await requestProvider("POST", "/orders", { body: { amount: 50000, currency: "INR" } }),
   ).toEqual({ id: "order_1" });
-  const call = fetch.mock.calls[0];
-  if (!call) throw new Error("Expected fetch call");
-  const [url, init] = call;
+  const { url, init } = required(calls[0], "fetch call");
   expect(url).toBe("https://api.razorpay.com/v1/orders");
   expect(init.method).toBe("POST");
   expect(init.headers).toMatchObject({
@@ -36,19 +37,13 @@ test("REST helper uses platform fetch, Basic auth, and JSON body", async () => {
 });
 
 test("refund idempotency key goes to X-Refund-Idempotency", async () => {
-  const fetch = vi.fn(
-    async (_url: string, _init: RequestInit) =>
-      new Response(JSON.stringify({ id: "rfnd_1" }), { status: 200 }),
-  );
-  vi.stubGlobal("fetch", fetch);
+  const calls = stubFetch(() => new Response(JSON.stringify({ id: "rfnd_1" }), { status: 200 }));
   await requestProvider("POST", "/payments/pay_1/refund", {
     body: { amount: 100 },
     refund: true,
     idempotencyKey: "refund-key-123",
   });
-  const call = fetch.mock.calls[0];
-  if (!call) throw new Error("Expected fetch call");
-  const [, init] = call;
+  const { init } = required(calls[0], "fetch call");
   expect(init.headers).toMatchObject({ "X-Refund-Idempotency": "refund-key-123" });
 });
 
@@ -91,12 +86,14 @@ test("GET and POST failures expose status and uncertain outcomes", async () => {
       throw new Error("network down");
     }),
   );
-  await expect(requestProvider("GET", "/resource", { idempotent: true })).rejects.toMatchObject({
-    data: { code: "RAZORPAY_NETWORK_ERROR" },
-  });
-  await expect(requestProvider("POST", "/resource", { idempotent: false })).rejects.toMatchObject({
-    data: { code: "RAZORPAY_NETWORK_ERROR" },
-  });
+  await expectRazorpayError(
+    requestProvider("GET", "/resource", { idempotent: true }),
+    "RAZORPAY_NETWORK_ERROR",
+  );
+  await expectRazorpayError(
+    requestProvider("POST", "/resource", { idempotent: false }),
+    "RAZORPAY_NETWORK_ERROR",
+  );
 });
 
 test("refund conflicts expose status without a retry recommendation", async () => {
@@ -113,9 +110,10 @@ test("malformed provider JSON has a structured error", async () => {
     "fetch",
     vi.fn(async () => new Response("not json", { status: 200 })),
   );
-  await expect(requestProvider("GET", "/resource", { idempotent: true })).rejects.toMatchObject({
-    data: { code: "RAZORPAY_INVALID_RESPONSE" },
-  });
+  await expectRazorpayError(
+    requestProvider("GET", "/resource", { idempotent: true }),
+    "RAZORPAY_INVALID_RESPONSE",
+  );
 });
 
 test("provider error fields never expose configured credentials", async () => {
@@ -148,16 +146,15 @@ test("provider error fields never expose configured credentials", async () => {
   }
 });
 
-test("test mode is explicit and missing either credential fails with a typed error", async () => {
+test("live mode without credentials fails with a typed error", async () => {
   vi.stubEnv("RAZORPAY_KEY_ID", undefined);
   vi.stubEnv("RAZORPAY_KEY_SECRET", undefined);
-  expect(() => isTestMode()).toThrow(
-    expect.objectContaining({
-      data: { code: "RAZORPAY_NOT_CONFIGURED", message: expect.any(String) },
-    }),
+  await expectRazorpayError(
+    Promise.resolve().then(() => resolveProviderMode()),
+    "RAZORPAY_NOT_CONFIGURED",
   );
   try {
-    isTestMode();
+    resolveProviderMode();
   } catch (error) {
     expect(isRazorpayError(error)).toBe(true);
     expect(error).toMatchObject({ data: { code: "RAZORPAY_NOT_CONFIGURED" } });
@@ -167,30 +164,38 @@ test("test mode is explicit and missing either credential fails with a typed err
   }
   vi.stubEnv("RAZORPAY_KEY_ID", "rzp_test_public");
   vi.stubEnv("RAZORPAY_KEY_SECRET", undefined);
-  await expect(requestProvider("GET", "/orders")).rejects.toMatchObject(
-    expect.objectContaining({
-      data: { code: "RAZORPAY_NOT_CONFIGURED", message: expect.any(String) },
-    }),
+  await expectRazorpayError(
+    Promise.resolve().then(() => resolveProviderMode()),
+    "RAZORPAY_NOT_CONFIGURED",
   );
+  await expectRazorpayError(requestProvider("GET", "/orders"), "RAZORPAY_NOT_CONFIGURED");
 });
 
-test("test mode requires explicit option or env opt-in and rejects a live key", () => {
+test("test mode simulates only without a key ID and calls Razorpay with rzp_test_ keys", async () => {
   vi.stubEnv("RAZORPAY_KEY_ID", undefined);
   vi.stubEnv("RAZORPAY_KEY_SECRET", undefined);
-  expect(isTestMode(true)).toBe(true);
+  expect(resolveProviderMode(true)).toEqual({ testMode: true, isSimulated: true });
   vi.stubEnv("RAZORPAY_TEST_MODE", "true");
-  expect(isTestMode()).toBe(true);
+  vi.stubEnv("RAZORPAY_KEY_SECRET", "fake-secret");
+  expect(resolveProviderMode()).toEqual({ testMode: true, isSimulated: true });
+  vi.stubEnv("RAZORPAY_TEST_MODE", undefined);
+  vi.stubEnv("RAZORPAY_KEY_ID", "rzp_test_public");
+  expect(resolveProviderMode()).toEqual({ testMode: true, isSimulated: false });
+  expect(resolveProviderMode(false)).toEqual({ testMode: true, isSimulated: false });
   vi.stubEnv("RAZORPAY_KEY_ID", "rzp_live_sensitive");
-  expect(() => isTestMode(true)).toThrow(
-    expect.objectContaining({
-      data: { code: "RAZORPAY_LIVE_KEY_TEST_MODE", message: expect.any(String) },
-    }),
+  expect(resolveProviderMode()).toEqual({ testMode: false, isSimulated: false });
+  await expectRazorpayError(
+    Promise.resolve().then(() => resolveProviderMode(true)),
+    "RAZORPAY_LIVE_KEY_TEST_MODE",
   );
 });
 
-test("page validation enforces the documented skip ceiling", () => {
+test("page validation enforces the documented skip ceiling", async () => {
   expect(validatePage(10, 900)).toEqual({ count: 10, skip: 900 });
-  expect(() => validatePage(10, 901)).toThrow("An argument is invalid, missing or out of bounds.");
+  await expectRazorpayError(
+    Promise.resolve().then(() => validatePage(10, 901)),
+    "RAZORPAY_INVALID_ARGUMENT",
+  );
 });
 
 test("request timer covers response parsing and is cleared on success or programming failure", async () => {
@@ -208,9 +213,10 @@ test("request timer covers response parsing and is cleared on success or program
         }),
     })),
   );
-  const pending = expect(requestProvider("GET", "/resource")).rejects.toMatchObject({
-    data: { code: "RAZORPAY_INVALID_RESPONSE" },
-  });
+  const pending = expectRazorpayError(
+    requestProvider("GET", "/resource"),
+    "RAZORPAY_INVALID_RESPONSE",
+  );
   await vi.advanceTimersByTimeAsync(10_000);
   await pending;
   expect(vi.getTimerCount()).toBe(0);
@@ -233,7 +239,8 @@ test("a failed provider response with malformed JSON remains a provider error", 
     "fetch",
     vi.fn(async () => new Response("not json", { status: 502 })),
   );
-  await expect(requestProvider("GET", "/resource")).rejects.toMatchObject({
-    data: { code: "RAZORPAY_PROVIDER_ERROR", providerStatus: 502, retryable: true },
+  await expectRazorpayErrorDetails(requestProvider("GET", "/resource"), "RAZORPAY_PROVIDER_ERROR", {
+    providerStatus: 502,
+    retryable: true,
   });
 });

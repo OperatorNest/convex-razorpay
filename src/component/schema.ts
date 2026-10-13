@@ -98,7 +98,7 @@ export default defineSchema({
     testMode: v.boolean(),
   })
     .index("by_razorpayRefundId", ["razorpayRefundId"])
-    .index("by_idempotencyKey", ["idempotencyKey"]),
+    .index("by_idempotencyKey_and_testMode", ["idempotencyKey", "testMode"]),
   customers: defineTable({
     razorpayCustomerId: v.string(),
     name: v.optional(v.string()),
@@ -116,7 +116,7 @@ export default defineSchema({
   })
     .index("by_razorpayCustomerId", ["razorpayCustomerId"])
     .index("by_userId_and_testMode", ["userId", "testMode"])
-    .index("by_idempotencyKey", ["idempotencyKey"]),
+    .index("by_idempotencyKey_and_testMode", ["idempotencyKey", "testMode"]),
   plans: defineTable({
     razorpayPlanId: v.string(),
     period: v.string(),
@@ -186,7 +186,12 @@ export default defineSchema({
     .index("by_bodyHash", ["bodyHash"])
     .index("by_receivedAt", ["receivedAt"]),
   idempotencyRequests: defineTable({
-    resource: v.union(v.literal("order"), v.literal("plan"), v.literal("subscription")),
+    resource: v.union(
+      v.literal("order"),
+      v.literal("plan"),
+      v.literal("subscription"),
+      v.literal("customer"),
+    ),
     testMode: v.boolean(),
     idempotencyKey: v.string(),
     requestFingerprint: v.string(),

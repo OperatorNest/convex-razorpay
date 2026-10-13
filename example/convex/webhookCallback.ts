@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { internalMutation } from "./_generated/server.js";
-import { webhookEventValidator } from "../../src/shared/validators.js";
+import { webhookEventValidator } from "@operatornest/convex-razorpay";
 
 export const onEvent = internalMutation({
   args: webhookEventValidator,

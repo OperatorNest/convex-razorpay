@@ -1,6 +1,7 @@
 import { ConvexError } from "convex/values";
-import { isRecord, wellFormed, truncateText } from "./validation.js";
+import { truncateText } from "./bounds.js";
 
+// repository-codes:begin
 export const RAZORPAY_ERROR_CODES = [
   "RAZORPAY_INVALID_ARGUMENT",
   "RAZORPAY_INVALID_RESPONSE",
@@ -15,14 +16,18 @@ export const RAZORPAY_ERROR_CODES = [
   "RAZORPAY_PROVIDER_ERROR",
   "RAZORPAY_NETWORK_ERROR",
   "RAZORPAY_INVALID_WEBHOOK_SIGNATURE",
+  "RAZORPAY_INVALID_PAYMENT_SIGNATURE",
+  "RAZORPAY_STALE_WEBHOOK",
   "RAZORPAY_MALFORMED_WEBHOOK",
   "RAZORPAY_INVALID_ENTITY",
 ] as const;
 
-/** Identifies the fixed reason a Razorpay operation failed. */
-export type RazorpayErrorCode = (typeof RAZORPAY_ERROR_CODES)[number];
+const RAZORPAY_PROVIDER_ERROR_CODES = [
+  "RAZORPAY_PROVIDER_ERROR",
+  "RAZORPAY_NETWORK_ERROR",
+] as const satisfies readonly RazorpayErrorCode[];
 
-const errorMessages = {
+const RAZORPAY_ERROR_MESSAGES = {
   RAZORPAY_INVALID_ARGUMENT: "An argument is invalid, missing or out of bounds.",
   RAZORPAY_INVALID_RESPONSE: "The provider response is invalid or a required mirror is missing.",
   RAZORPAY_NOT_CONFIGURED: "Razorpay component configuration is missing or invalid.",
@@ -38,11 +43,25 @@ const errorMessages = {
   RAZORPAY_PROVIDER_ERROR: "Razorpay returned a failure response.",
   RAZORPAY_NETWORK_ERROR: "The Razorpay network request failed with an uncertain outcome.",
   RAZORPAY_INVALID_WEBHOOK_SIGNATURE: "The webhook signature is invalid.",
+  RAZORPAY_INVALID_PAYMENT_SIGNATURE: "The Checkout payment signature is invalid.",
+  RAZORPAY_STALE_WEBHOOK: "The webhook event is older than the deduplication retention window.",
   RAZORPAY_MALFORMED_WEBHOOK: "The webhook body or envelope is invalid or exceeds the size limit.",
   RAZORPAY_INVALID_ENTITY: "The webhook entities or their relationships are invalid.",
 } as const satisfies Record<RazorpayErrorCode, string>;
+// repository-codes:end
 
-/** Contains a fixed Razorpay failure message and bounded provider details. */
+const ERROR_DATA_KEYS: ReadonlySet<string> = new Set([
+  "code",
+  "message",
+  "retryable",
+  "providerStatus",
+  "providerCode",
+]);
+
+/** One fixed caller-visible failure; `RAZORPAY_ERROR_CODES` lists every code. */
+export type RazorpayErrorCode = (typeof RAZORPAY_ERROR_CODES)[number];
+
+/** Error data: the code, its fixed message and bounded provider failure details. `retryable` is present exactly on provider-originated codes. */
 export type RazorpayErrorData = {
   code: RazorpayErrorCode;
   message: string;
@@ -51,45 +70,58 @@ export type RazorpayErrorData = {
   providerCode?: string;
 };
 
-/** Identify a Razorpay error with its fixed message and bounded provider details. */
+type ProviderErrorCode = (typeof RAZORPAY_PROVIDER_ERROR_CODES)[number];
+
+type ErrorDetails<Code extends RazorpayErrorCode> = [Code] extends [
+  Exclude<RazorpayErrorCode, ProviderErrorCode>,
+]
+  ? [details?: { retryable?: never; providerStatus?: number; providerCode?: string }]
+  : [details: { retryable: boolean; providerStatus?: number; providerCode?: string }];
+
+function isProviderErrorCode(code: unknown): code is ProviderErrorCode {
+  return RAZORPAY_PROVIDER_ERROR_CODES.some((candidate) => candidate === code);
+}
+
+/** Creates the error for `code` with its fixed message. Provider-originated codes require `details.retryable`; other codes forbid it. `providerCode` is truncated to 64 characters. */
+export function razorpayError<Code extends RazorpayErrorCode>(
+  code: Code,
+  ...[details]: ErrorDetails<Code>
+): ConvexError<RazorpayErrorData> {
+  return new ConvexError({
+    code,
+    message: RAZORPAY_ERROR_MESSAGES[code],
+    ...(isProviderErrorCode(code) &&
+      details?.retryable !== undefined && { retryable: details.retryable }),
+    ...(details?.providerStatus !== undefined && { providerStatus: details.providerStatus }),
+    ...(details?.providerCode !== undefined && {
+      providerCode: truncateText(details.providerCode, 64),
+    }),
+  });
+}
+
+/** Returns true when `error` carries exactly a known code, its fixed message, `retryable` on provider-originated codes only, and well-formed provider details. */
 export function isRazorpayError(error: unknown): error is ConvexError<RazorpayErrorData> {
-  if (!(error instanceof ConvexError) || !isRecord(error.data)) return false;
-  const data = error.data;
-  const code = RAZORPAY_ERROR_CODES.find((candidate) => candidate === data.code);
+  if (!(error instanceof ConvexError)) return false;
+  const data: unknown = error.data;
+  if (typeof data !== "object" || data === null || !("code" in data) || !("message" in data))
+    return false;
+  const { code, message } = data;
   return (
-    code !== undefined &&
-    data.message === errorMessages[code] &&
-    (data.retryable === undefined ||
-      ((data.code === "RAZORPAY_PROVIDER_ERROR" || data.code === "RAZORPAY_NETWORK_ERROR") &&
-        typeof data.retryable === "boolean")) &&
-    (data.providerStatus === undefined ||
+    Object.keys(data).every((key) => ERROR_DATA_KEYS.has(key)) &&
+    RAZORPAY_ERROR_CODES.some(
+      (candidate) => candidate === code && message === RAZORPAY_ERROR_MESSAGES[candidate],
+    ) &&
+    ("retryable" in data
+      ? isProviderErrorCode(code) && typeof data.retryable === "boolean"
+      : !isProviderErrorCode(code)) &&
+    (!("providerStatus" in data) ||
       (typeof data.providerStatus === "number" &&
         Number.isInteger(data.providerStatus) &&
         data.providerStatus >= 100 &&
         data.providerStatus <= 599)) &&
-    (data.providerCode === undefined ||
+    (!("providerCode" in data) ||
       (typeof data.providerCode === "string" &&
-        data.providerCode.length <= 64 &&
-        wellFormed(data.providerCode))) &&
-    Object.keys(data).every((key) =>
-      ["code", "message", "retryable", "providerStatus", "providerCode"].includes(key),
-    )
+        data.providerCode.isWellFormed() &&
+        data.providerCode.length <= 64))
   );
-}
-
-export function razorpayError(
-  code: RazorpayErrorCode,
-  details?: { retryable?: boolean; providerStatus?: number; providerCode?: string },
-): ConvexError<RazorpayErrorData> {
-  return new ConvexError({
-    code,
-    message: errorMessages[code],
-    ...(code === "RAZORPAY_PROVIDER_ERROR" || code === "RAZORPAY_NETWORK_ERROR"
-      ? { retryable: details?.retryable ?? true }
-      : {}),
-    ...(details?.providerStatus === undefined ? {} : { providerStatus: details.providerStatus }),
-    ...(details?.providerCode === undefined
-      ? {}
-      : { providerCode: truncateText(details.providerCode, 64) }),
-  });
 }

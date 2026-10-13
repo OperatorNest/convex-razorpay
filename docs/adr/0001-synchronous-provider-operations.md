@@ -1,4 +1,4 @@
-# ADR 0001: Synchronous provider operations
+# 0001: Synchronous provider operations
 
 Provider calls run in Convex actions and return a result or classified error to the caller. The component has no queue or automatic retry loop. Apps needing durable background execution must supply orchestration.
 

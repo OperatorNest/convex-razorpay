@@ -3,11 +3,9 @@
   "compilerOptions": {
     "rootDir": ".",
     "noEmit": true,
-    "composite": false,
     "types": ["vitest/globals"],
     "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "exactOptionalPropertyTypes": false
+    "moduleResolution": "NodeNext"
   },
   "include": ["src/**/*.ts", "example/**/*.ts"]
 }

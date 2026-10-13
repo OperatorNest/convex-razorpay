@@ -8,7 +8,6 @@
  * @module
  */
 
-import type * as config from "../config.js";
 import type * as crons from "../crons.js";
 import type * as customers from "../customers.js";
 import type * as idempotency from "../idempotency.js";
@@ -16,7 +15,6 @@ import type * as lookup from "../lookup.js";
 import type * as mapping from "../mapping.js";
 import type * as mutations from "../mutations.js";
 import type * as orders from "../orders.js";
-import type * as pagination from "../pagination.js";
 import type * as paymentLinks from "../paymentLinks.js";
 import type * as payments from "../payments.js";
 import type * as plans from "../plans.js";
@@ -35,7 +33,6 @@ import type {
 import { anyApi, componentsGeneric } from "convex/server";
 
 const fullApi: ApiFromModules<{
-  config: typeof config;
   crons: typeof crons;
   customers: typeof customers;
   idempotency: typeof idempotency;
@@ -43,7 +40,6 @@ const fullApi: ApiFromModules<{
   mapping: typeof mapping;
   mutations: typeof mutations;
   orders: typeof orders;
-  pagination: typeof pagination;
   paymentLinks: typeof paymentLinks;
   payments: typeof payments;
   plans: typeof plans;

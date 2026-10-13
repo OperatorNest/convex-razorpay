@@ -1,4 +1,10 @@
-import { stubRazorpayEnv, restoreRazorpayTestState } from "../test-helpers.js";
+import {
+  stubRazorpayEnv,
+  restoreRazorpayTestState,
+  stubLiveRazorpayEnv,
+  stubSimulatedRazorpayEnv,
+  expectRazorpayError,
+} from "../test-helpers.js";
 import { computeHmacSha256Hex } from "../shared/crypto.js";
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -70,33 +76,44 @@ const subscription = (id: string, status = "active") => ({
 });
 
 function mismatch(promise: Promise<unknown>) {
-  return expect(promise).rejects.toMatchObject({ data: { code: "RAZORPAY_MODE_MISMATCH" } });
+  return expectRazorpayError(promise, "RAZORPAY_MODE_MISMATCH");
 }
 function notFound(promise: Promise<unknown>) {
-  return expect(promise).rejects.toMatchObject({ data: { code: "RAZORPAY_NOT_FOUND" } });
+  return expectRazorpayError(promise, "RAZORPAY_NOT_FOUND");
 }
 
 async function mirrorLiveRows(t: Harness) {
-  await t.mutation(internal.mutations.putOrder, { raw: order("order_mirror"), observedAt });
-  await t.mutation(internal.mutations.putPayment, { raw: payment("pay_live"), observedAt });
+  await t.mutation(internal.mutations.putOrder, {
+    testMode: false,
+    raw: order("order_mirror"),
+    observedAt,
+  });
   await t.mutation(internal.mutations.putPayment, {
+    testMode: false,
+    raw: payment("pay_live"),
+    observedAt,
+  });
+  await t.mutation(internal.mutations.putPayment, {
+    testMode: false,
     raw: payment("pay_live_authorized", "authorized"),
     observedAt,
   });
   await t.mutation(internal.mutations.putRefund, {
+    testMode: false,
     raw: refund("rfnd_live", "pay_live"),
     observedAt,
   });
-  await t.mutation(internal.mutations.putCustomer, { raw: customer, observedAt });
-  await t.mutation(internal.mutations.putPlan, { raw: plan, observedAt });
+  await t.mutation(internal.mutations.putCustomer, { testMode: false, raw: customer, observedAt });
+  await t.mutation(internal.mutations.putPlan, { testMode: false, raw: plan, observedAt });
   await t.mutation(internal.mutations.putSubscription, {
+    testMode: false,
     raw: subscription("sub_live"),
     observedAt,
   });
 }
 
 beforeEach(() => {
-  stubRazorpayEnv({ keyId: "rzp_test_public", keySecret: "fake_secret" });
+  stubRazorpayEnv({ keySecret: "fake_secret" });
   vi.stubGlobal(
     "fetch",
     vi.fn(() => {
@@ -380,13 +397,21 @@ test("every test-mode create tags its mirror and uses a long digest id", async (
 });
 
 const webhookSecret = "whsec_mode_tag";
-async function ingest(t: Harness, eventId: string, event: string, payload: unknown) {
+async function ingest(
+  t: Harness,
+  eventId: string,
+  event: string,
+  payload: unknown,
+  expectedStatus: "processed" | "failed" = "processed",
+) {
   const body = JSON.stringify({ entity: "event", event, created_at: 1_567_674_600, payload });
-  return t.action(api.webhooks.ingest, {
+  const receipt = await t.action(api.webhooks.ingest, {
     body,
     signature: await computeHmacSha256Hex(webhookSecret, body),
     eventId,
   });
+  expect(receipt.status).toBe(expectedStatus);
+  return receipt;
 }
 
 async function ingestAll(t: Harness, suffix: string) {
@@ -411,6 +436,8 @@ async function ingestAll(t: Harness, suffix: string) {
 }
 
 test("webhook rows are live unless the deployment runs in test mode", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(1_567_674_660_000);
   vi.stubEnv("RAZORPAY_WEBHOOK_SECRET", webhookSecret);
   const t = convexTest(schema, modules);
   await ingestAll(t, "live");
@@ -437,13 +464,25 @@ test("webhook rows are live unless the deployment runs in test mode", async () =
 });
 
 test("a webhook never re-tags an existing mirrored row", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(1_567_674_660_000);
   vi.stubEnv("RAZORPAY_WEBHOOK_SECRET", webhookSecret);
   const t = convexTest(schema, modules);
-  await t.mutation(internal.mutations.putPayment, { raw: payment("pay_retag"), observedAt });
-  vi.stubEnv("RAZORPAY_TEST_MODE", "true");
-  await ingest(t, "evt_retag", "payment.captured", {
-    payment: { entity: { ...payment("pay_retag"), created_at: 1_567_674_700 } },
+  await t.mutation(internal.mutations.putPayment, {
+    testMode: false,
+    raw: payment("pay_retag"),
+    observedAt,
   });
+  vi.stubEnv("RAZORPAY_TEST_MODE", "true");
+  await ingest(
+    t,
+    "evt_retag",
+    "payment.captured",
+    {
+      payment: { entity: { ...payment("pay_retag"), created_at: 1_567_674_700 } },
+    },
+    "failed",
+  );
   expect(await paymentRow(t, "pay_retag")).toMatchObject({ testMode: false });
 });
 
@@ -488,18 +527,63 @@ test("a false testMode option cannot disable component env test mode", async () 
     (await t.action(api.orders.create, { partialPayment: false, ...args, testMode: true })).order
       .testMode,
   ).toBe(true);
-  await expect(
+  await expectRazorpayError(
     t.action(api.orders.create, { partialPayment: false, ...args }),
-  ).rejects.toMatchObject({
-    data: { code: "RAZORPAY_NOT_CONFIGURED" },
-  });
+    "RAZORPAY_NOT_CONFIGURED",
+  );
 
   stubRazorpayEnv({ keyId: "rzp_live_fixture", keySecret: "fake_secret", testMode: "true" });
-  await expect(
+  await expectRazorpayError(
     t.action(api.orders.create, { partialPayment: false, ...args }),
-  ).rejects.toMatchObject({
-    data: { code: "RAZORPAY_LIVE_KEY_TEST_MODE" },
+    "RAZORPAY_LIVE_KEY_TEST_MODE",
+  );
+});
+
+test("one refund or customer idempotency key resolves to a separate row in each mode", async () => {
+  const t = convexTest(schema, modules);
+  const sharedKey = "shared_mode_key";
+  const refundArgs = {
+    razorpayPaymentId: "pay_shared_key",
+    amount: 100,
+    speed: "normal" as const,
+    idempotencyKey: sharedKey,
+  };
+  const customerArgs = {
+    name: "Shared Key",
+    email: "shared@example.test",
+    idempotencyKey: sharedKey,
+  };
+  const fetch = vi.fn(async (url: string) =>
+    Response.json(
+      url.endsWith("/customers")
+        ? { ...customer, id: "cust_shared_live", notes: { operatornestIdempotencyKey: sharedKey } }
+        : refund("rfnd_shared_live", refundArgs.razorpayPaymentId),
+    ),
+  );
+  vi.stubGlobal("fetch", fetch);
+
+  stubSimulatedRazorpayEnv();
+  await t.mutation(internal.mutations.putPayment, {
+    testMode: true,
+    raw: { ...payment(refundArgs.razorpayPaymentId), order_id: undefined },
+    observedAt,
   });
+  const simulatedRefund = await t.action(api.refunds.create, refundArgs);
+  const simulatedCustomer = await t.action(api.customers.create, customerArgs);
+  stubLiveRazorpayEnv();
+  const liveRefund = await t.action(api.refunds.create, refundArgs);
+  const liveCustomer = await t.action(api.customers.create, customerArgs);
+  expect(liveRefund).toMatchObject({ razorpayRefundId: "rfnd_shared_live", testMode: false });
+  expect(liveCustomer).toMatchObject({ razorpayCustomerId: "cust_shared_live", testMode: false });
+  expect(simulatedRefund.testMode).toBe(true);
+  expect(simulatedCustomer.testMode).toBe(true);
+
+  expect(await t.action(api.refunds.create, refundArgs)).toEqual(liveRefund);
+  expect(await t.action(api.customers.create, customerArgs)).toEqual(liveCustomer);
+  stubSimulatedRazorpayEnv();
+  expect(await t.action(api.refunds.create, refundArgs)).toEqual(simulatedRefund);
+  expect(await t.action(api.customers.create, customerArgs)).toEqual(simulatedCustomer);
+  expect(fetch).toHaveBeenCalledTimes(2);
 });
 
 test("receipts are printable ASCII for orders and refunds", async () => {
@@ -510,7 +594,7 @@ test("receipts are printable ASCII for orders and refunds", async () => {
     testMode: true,
   });
   for (const receipt of ["", "caf\u00e9", "line\nbreak", "x".repeat(41)]) {
-    await expect(
+    await expectRazorpayError(
       t.action(api.refunds.create, {
         speed: "normal",
         razorpayPaymentId: "pay_receipt",
@@ -519,13 +603,9 @@ test("receipts are printable ASCII for orders and refunds", async () => {
         idempotencyKey: "receipt_validation_key",
         testMode: true,
       }),
-    ).rejects.toMatchObject({
-      data: {
-        code: "RAZORPAY_INVALID_ARGUMENT",
-        message: "An argument is invalid, missing or out of bounds.",
-      },
-    });
-    await expect(
+      "RAZORPAY_INVALID_ARGUMENT",
+    );
+    await expectRazorpayError(
       t.action(api.orders.create, {
         partialPayment: false,
         amount: 5000,
@@ -533,12 +613,8 @@ test("receipts are printable ASCII for orders and refunds", async () => {
         receipt,
         testMode: true,
       }),
-    ).rejects.toMatchObject({
-      data: {
-        code: "RAZORPAY_INVALID_ARGUMENT",
-        message: "An argument is invalid, missing or out of bounds.",
-      },
-    });
+      "RAZORPAY_INVALID_ARGUMENT",
+    );
   }
   expect(
     await t.action(api.refunds.create, {

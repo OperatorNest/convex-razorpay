@@ -2,6 +2,7 @@ import { convexTest } from "convex-test";
 import { afterEach, expect, test, vi } from "vitest";
 import { api } from "./_generated/api.js";
 import schema from "./schema.js";
+import { expectRazorpayError } from "../test-helpers.js";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
@@ -12,7 +13,7 @@ afterEach(() => {
 });
 
 test("live fetches reject provider records with a different resource ID", async () => {
-  vi.stubEnv("RAZORPAY_KEY_ID", "rzp_test_fixture");
+  vi.stubEnv("RAZORPAY_KEY_ID", "rzp_live_fixture");
   vi.stubEnv("RAZORPAY_KEY_SECRET", "fabricated_secret");
   vi.stubEnv("RAZORPAY_TEST_MODE", undefined);
   vi.stubGlobal(
@@ -21,38 +22,34 @@ test("live fetches reject provider records with a different resource ID", async 
   );
   const t = convexTest(schema, modules);
 
-  await expect(
+  await expectRazorpayError(
     t.action(api.orders.fetch, { razorpayOrderId: "order_requested" }),
-  ).rejects.toMatchObject({
-    data: { code: "RAZORPAY_INVALID_RESPONSE" },
-  });
-  await expect(
+    "RAZORPAY_INVALID_RESPONSE",
+  );
+  await expectRazorpayError(
     t.action(api.payments.fetch, { razorpayPaymentId: "pay_requested" }),
-  ).rejects.toMatchObject({
-    data: { code: "RAZORPAY_INVALID_RESPONSE" },
-  });
-  await expect(
+    "RAZORPAY_INVALID_RESPONSE",
+  );
+  await expectRazorpayError(
     t.action(api.refunds.fetch, { razorpayRefundId: "rfnd_requested" }),
-  ).rejects.toMatchObject({
-    data: { code: "RAZORPAY_INVALID_RESPONSE" },
-  });
-  await expect(
+    "RAZORPAY_INVALID_RESPONSE",
+  );
+  await expectRazorpayError(
     t.action(api.customers.fetch, { razorpayCustomerId: "cust_requested" }),
-  ).rejects.toMatchObject({
-    data: { code: "RAZORPAY_INVALID_RESPONSE" },
-  });
-  await expect(
+    "RAZORPAY_INVALID_RESPONSE",
+  );
+  await expectRazorpayError(
     t.action(api.plans.fetch, { razorpayPlanId: "plan_requested" }),
-  ).rejects.toMatchObject({
-    data: { code: "RAZORPAY_INVALID_RESPONSE" },
-  });
-  await expect(
+    "RAZORPAY_INVALID_RESPONSE",
+  );
+  await expectRazorpayError(
     t.action(api.subscriptions.fetch, { razorpaySubscriptionId: "sub_requested" }),
-  ).rejects.toMatchObject({ data: { code: "RAZORPAY_INVALID_RESPONSE" } });
+    "RAZORPAY_INVALID_RESPONSE",
+  );
 });
 
 test("live order payment listing rejects cross-order provider data before mirroring it", async () => {
-  vi.stubEnv("RAZORPAY_KEY_ID", "rzp_test_fixture");
+  vi.stubEnv("RAZORPAY_KEY_ID", "rzp_live_fixture");
   vi.stubEnv("RAZORPAY_KEY_SECRET", "fabricated_secret");
   vi.stubGlobal(
     "fetch",
@@ -69,9 +66,10 @@ test("live order payment listing rejects cross-order provider data before mirror
   );
   const t = convexTest(schema, modules);
 
-  await expect(
+  await expectRazorpayError(
     t.action(api.orders.fetchPayments, { razorpayOrderId: "order_requested" }),
-  ).rejects.toMatchObject({ data: { code: "RAZORPAY_INVALID_RESPONSE" } });
+    "RAZORPAY_INVALID_RESPONSE",
+  );
   expect(
     await t
       .query(api.payments.list, {
@@ -83,7 +81,7 @@ test("live order payment listing rejects cross-order provider data before mirror
 });
 
 test("live refund creation rejects a provider refund linked to another payment", async () => {
-  vi.stubEnv("RAZORPAY_KEY_ID", "rzp_test_fixture");
+  vi.stubEnv("RAZORPAY_KEY_ID", "rzp_live_fixture");
   vi.stubEnv("RAZORPAY_KEY_SECRET", "fabricated_secret");
   vi.stubGlobal(
     "fetch",
@@ -91,19 +89,20 @@ test("live refund creation rejects a provider refund linked to another payment",
   );
   const t = convexTest(schema, modules);
 
-  await expect(
+  await expectRazorpayError(
     t.action(api.refunds.create, {
       speed: "normal",
       razorpayPaymentId: "pay_requested",
       amount: 100,
       idempotencyKey: "refund_key_123",
     }),
-  ).rejects.toMatchObject({ data: { code: "RAZORPAY_INVALID_RESPONSE" } });
+    "RAZORPAY_INVALID_RESPONSE",
+  );
   expect(await t.run((ctx) => ctx.db.query("refunds").take(1))).toEqual([]);
 });
 
 test("live order create mirrors the provider record and keyed retry does not post twice", async () => {
-  vi.stubEnv("RAZORPAY_KEY_ID", "rzp_test_fixture");
+  vi.stubEnv("RAZORPAY_KEY_ID", "rzp_live_fixture");
   vi.stubEnv("RAZORPAY_KEY_SECRET", "fabricated_secret");
   const fetch = vi.fn(
     async () =>
@@ -136,7 +135,7 @@ test("live order create mirrors the provider record and keyed retry does not pos
   const second = await t.action(api.orders.create, { partialPayment: false, ...args });
   expect(first.order.razorpayOrderId).toBe("order_live_fixture");
   expect(second.order._id).toBe(first.order._id);
-  expect(first.keyId).toBe("rzp_test_fixture");
+  expect(first.keyId).toBe("rzp_live_fixture");
   expect(fetch).toHaveBeenCalledTimes(1);
   const mirrored = await t.query(api.orders.get, { razorpayOrderId: "order_live_fixture" });
   expect(mirrored).toMatchObject({

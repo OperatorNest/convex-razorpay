@@ -21,25 +21,22 @@ const linkage = {
   createdThroughComponent: schema.tables.orders.validator.fields.createdThroughComponent,
 };
 
-const writeArgs = { raw: v.any(), observedAt: v.number(), ...linkage };
+const writeArgs = { raw: v.any(), observedAt: v.number(), ...linkage, testMode: v.boolean() };
 
 export const putOrder = internalMutation({
   args: writeArgs,
   returns: schema.doc("orders"),
-  handler: (ctx, args) =>
-    applyOrder(ctx, args.raw, args.observedAt, { ...args, testMode: args.testMode ?? false }),
+  handler: (ctx, args) => applyOrder(ctx, args.raw, args.observedAt, args),
 });
 export const putPayment = internalMutation({
-  args: { raw: v.any(), observedAt: v.number(), testMode: v.optional(v.boolean()) },
+  args: { raw: v.any(), observedAt: v.number(), testMode: v.boolean() },
   returns: schema.doc("payments"),
-  handler: (ctx, args) =>
-    applyPayment(ctx, args.raw, args.observedAt, { testMode: args.testMode ?? false }),
+  handler: (ctx, args) => applyPayment(ctx, args.raw, args.observedAt, args),
 });
 export const putRefund = internalMutation({
   args: writeArgs,
   returns: schema.doc("refunds"),
-  handler: (ctx, args) =>
-    applyRefund(ctx, args.raw, args.observedAt, { ...args, testMode: args.testMode ?? false }),
+  handler: (ctx, args) => applyRefund(ctx, args.raw, args.observedAt, args),
 });
 export const putTestRefund = internalMutation({
   args: {
@@ -57,10 +54,11 @@ export const putTestRefund = internalMutation({
     if (args.idempotencyKey) {
       const existing = await ctx.db
         .query("refunds")
-        .withIndex("by_idempotencyKey", (q) => q.eq("idempotencyKey", args.idempotencyKey))
+        .withIndex("by_idempotencyKey_and_testMode", (q) =>
+          q.eq("idempotencyKey", args.idempotencyKey).eq("testMode", true),
+        )
         .first();
       if (existing) {
-        assertModeMatches(existing, true);
         if (existing.requestFingerprint !== args.requestFingerprint)
           throw razorpayError("RAZORPAY_IDEMPOTENCY_CONFLICT");
         return existing;
@@ -116,23 +114,17 @@ export const putTestRefund = internalMutation({
 export const putCustomer = internalMutation({
   args: writeArgs,
   returns: schema.doc("customers"),
-  handler: (ctx, args) =>
-    applyCustomer(ctx, args.raw, args.observedAt, { ...args, testMode: args.testMode ?? false }),
+  handler: (ctx, args) => applyCustomer(ctx, args.raw, args.observedAt, args),
 });
 export const putPlan = internalMutation({
   args: writeArgs,
   returns: schema.doc("plans"),
-  handler: (ctx, args) =>
-    applyPlan(ctx, args.raw, args.observedAt, { ...args, testMode: args.testMode ?? false }),
+  handler: (ctx, args) => applyPlan(ctx, args.raw, args.observedAt, args),
 });
 export const putSubscription = internalMutation({
   args: writeArgs,
   returns: schema.doc("subscriptions"),
-  handler: (ctx, args) =>
-    applySubscription(ctx, args.raw, args.observedAt, {
-      ...args,
-      testMode: args.testMode ?? false,
-    }),
+  handler: (ctx, args) => applySubscription(ctx, args.raw, args.observedAt, args),
 });
 export const markVerified = internalMutation({
   args: {
@@ -181,21 +173,25 @@ export const orderByKey = internalQuery({
       .first(),
 });
 export const refundByKey = internalQuery({
-  args: { idempotencyKey: v.string() },
+  args: { idempotencyKey: v.string(), testMode: v.boolean() },
   returns: v.union(schema.doc("refunds"), v.null()),
-  handler: (ctx, { idempotencyKey }) =>
+  handler: (ctx, { idempotencyKey, testMode }) =>
     ctx.db
       .query("refunds")
-      .withIndex("by_idempotencyKey", (q) => q.eq("idempotencyKey", idempotencyKey))
+      .withIndex("by_idempotencyKey_and_testMode", (q) =>
+        q.eq("idempotencyKey", idempotencyKey).eq("testMode", testMode),
+      )
       .first(),
 });
 export const customerByKey = internalQuery({
-  args: { idempotencyKey: v.string() },
+  args: { idempotencyKey: v.string(), testMode: v.boolean() },
   returns: v.union(schema.doc("customers"), v.null()),
-  handler: (ctx, { idempotencyKey }) =>
+  handler: (ctx, { idempotencyKey, testMode }) =>
     ctx.db
       .query("customers")
-      .withIndex("by_idempotencyKey", (q) => q.eq("idempotencyKey", idempotencyKey))
+      .withIndex("by_idempotencyKey_and_testMode", (q) =>
+        q.eq("idempotencyKey", idempotencyKey).eq("testMode", testMode),
+      )
       .first(),
 });
 export const customerByUser = internalQuery({

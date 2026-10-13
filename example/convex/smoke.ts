@@ -9,10 +9,15 @@ const razorpay = new Razorpay(components.razorpay, {
 
 export const environment = internalQuery({
   args: {},
-  returns: v.object({ testMode: v.boolean(), keyIdConfigured: v.boolean() }),
+  returns: v.object({
+    testMode: v.boolean(),
+    keyIdConfigured: v.boolean(),
+    keySecretConfigured: v.boolean(),
+  }),
   handler: () => ({
     testMode: env.RAZORPAY_TEST_MODE === "true",
     keyIdConfigured: Boolean(env.RAZORPAY_KEY_ID),
+    keySecretConfigured: Boolean(env.RAZORPAY_KEY_SECRET),
   }),
 });
 
@@ -37,7 +42,7 @@ export const setup = internalAction({
     razorpayPlanId: v.string(),
     razorpaySubscriptionId: v.string(),
     amount: v.number(),
-    checkoutKeyIdPresent: v.boolean(),
+    checkoutKeyIdOmitted: v.boolean(),
   }),
   handler: async (ctx, { userId, runId }) => {
     const customerArgs = { userId, name: "Smoke Tester", email: `${runId}@example.com` };
@@ -71,13 +76,13 @@ export const setup = internalAction({
       razorpayPlanId: plan.razorpayPlanId,
       razorpaySubscriptionId: subscription.razorpaySubscriptionId,
       amount: order.amount,
-      checkoutKeyIdPresent:
+      checkoutKeyIdOmitted:
+        order.keyId === undefined &&
         buildCheckoutOptions({
           razorpayOrderId: order.razorpayOrderId,
           amount: order.amount,
           currency: order.currency,
-          ...(order.keyId === undefined ? {} : { keyId: order.keyId }),
-        }).key === env.RAZORPAY_KEY_ID,
+        }).key === undefined,
     };
   },
 });
@@ -195,16 +200,6 @@ export const paginate = internalAction({
           secondSubscriptions.page[0]?.razorpaySubscriptionId,
     };
   },
-});
-
-export const cleanup = internalAction({
-  args: {},
-  returns: v.object({ removedRecent: v.number() }),
-  handler: async (ctx) => ({
-    removedRecent: await ctx.runMutation(components.razorpay.webhooks.cleanup, {
-      before: Date.now() - 30 * 86400_000,
-    }),
-  }),
 });
 
 export const state = internalQuery({

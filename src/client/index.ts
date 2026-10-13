@@ -29,10 +29,17 @@ import { maxWebhookBodyBytes } from "../shared/constants.js";
 export { RAZORPAY_ERROR_CODES, isRazorpayError } from "../shared/errors.js";
 export type { RazorpayErrorCode, RazorpayErrorData } from "../shared/errors.js";
 export { computeSha256Hex, computeHmacSha256Hex, compareHexSignatures } from "../shared/crypto.js";
+export { webhookEventValidator } from "../shared/validators.js";
 
-type ActionContext = Pick<GenericActionCtx<GenericDataModel>, "runAction">;
-type MutationContext = Pick<GenericMutationCtx<GenericDataModel>, "runMutation">;
-type QueryContext = Pick<GenericQueryCtx<GenericDataModel>, "runQuery">;
+// shared-block:begin
+/** Runs component queries; app queries, mutations and actions provide it. */
+export type QueryContext = Pick<GenericQueryCtx<GenericDataModel>, "runQuery">;
+/** Runs component mutations; app mutations and actions provide it. */
+export type MutationContext = Pick<GenericMutationCtx<GenericDataModel>, "runMutation">;
+/** Runs component actions; app actions provide it. */
+export type ActionContext = Pick<GenericActionCtx<GenericDataModel>, "runAction">;
+// shared-block:end
+
 /** Describes a verified Razorpay event delivered to the app callback. */
 export type RazorpayWebhookEventArgs = Infer<typeof webhookEventValidator>;
 type EventCallback = FunctionReference_future<
@@ -67,11 +74,15 @@ export function buildCheckoutOptions(
   options?: Omit<CheckoutOptions, "key" | "order_id" | "amount" | "currency">,
 ): CheckoutOptions {
   return {
-    ...options,
-    ...(order.keyId === undefined ? {} : { key: order.keyId }),
+    key: order.keyId,
     order_id: order.razorpayOrderId,
     amount: order.amount,
     currency: order.currency,
+    name: options?.name,
+    description: options?.description,
+    prefill: options?.prefill,
+    notes: options?.notes,
+    theme: options?.theme,
   };
 }
 
@@ -85,13 +96,15 @@ function exposeRow<
 
 /** Provides aggregate operations for Razorpay resources and stored mirrors. */
 export class Razorpay {
+  /** Creates a client for the mounted component; `options` selects test mode and the event callback. */
   constructor(
     private readonly component: ComponentApi,
     private readonly options: RazorpayOptions = {},
   ) {}
 
+  /** Creates and reads Razorpay orders and verifies their Checkout payments. */
   readonly orders = {
-    /** Creates a order and stores its mirror. */
+    /** Creates an order and stores its mirror. */
     create: (
       ctx: ActionContext,
       args: Omit<FunctionArgs<ComponentApi["orders"]["create"]>, "testMode">,
@@ -99,30 +112,30 @@ export class Razorpay {
       const componentArgs = {
         amount: args.amount,
         currency: args.currency,
-        ...(args.receipt === undefined ? {} : { receipt: args.receipt }),
-        ...(args.notes === undefined ? {} : { notes: args.notes }),
+        receipt: args.receipt,
+        notes: args.notes,
         partialPayment: args.partialPayment,
-        ...(args.userId === undefined ? {} : { userId: args.userId }),
-        ...(args.externalId === undefined ? {} : { externalId: args.externalId }),
-        ...(args.metadata === undefined ? {} : { metadata: args.metadata }),
-        ...(args.idempotencyKey === undefined ? {} : { idempotencyKey: args.idempotencyKey }),
-        ...(this.options.testMode === undefined ? {} : { testMode: this.options.testMode }),
+        userId: args.userId,
+        externalId: args.externalId,
+        metadata: args.metadata,
+        idempotencyKey: args.idempotencyKey,
+        testMode: this.options.testMode,
       };
       return ctx
         .runAction(this.component.orders.create, componentArgs)
         .then(({ order, keyId }) => ({
           ...exposeRow(order, (orderId) => ({ orderId })),
-          ...(keyId === undefined ? {} : { keyId }),
+          keyId,
         }));
     },
-    /** Fetches a order without storing the provider response. */
+    /** Fetches an order without storing the provider response. */
     fetch: (
       ctx: ActionContext,
       args: Omit<FunctionArgs<ComponentApi["orders"]["fetch"]>, "testMode">,
     ) => {
       const componentArgs = {
         razorpayOrderId: args.razorpayOrderId,
-        ...(this.options.testMode === undefined ? {} : { testMode: this.options.testMode }),
+        testMode: this.options.testMode,
       };
       return ctx.runAction(this.component.orders.fetch, componentArgs);
     },
@@ -133,7 +146,7 @@ export class Razorpay {
     ) => {
       const componentArgs = {
         razorpayOrderId: args.razorpayOrderId,
-        ...(this.options.testMode === undefined ? {} : { testMode: this.options.testMode }),
+        testMode: this.options.testMode,
       };
       return ctx.runAction(this.component.orders.fetchPayments, componentArgs);
     },
@@ -144,7 +157,7 @@ export class Razorpay {
     ) => {
       const componentArgs = {
         razorpayOrderId: args.razorpayOrderId,
-        ...(this.options.testMode === undefined ? {} : { testMode: this.options.testMode }),
+        testMode: this.options.testMode,
       };
       return ctx
         .runQuery(this.component.orders.get, componentArgs)
@@ -159,8 +172,8 @@ export class Razorpay {
         razorpayOrderId: args.razorpayOrderId,
         razorpayPaymentId: args.razorpayPaymentId,
         signature: args.signature,
-        ...(args.userId === undefined ? {} : { userId: args.userId }),
-        ...(this.options.testMode === undefined ? {} : { testMode: this.options.testMode }),
+        userId: args.userId,
+        testMode: this.options.testMode,
       };
       return ctx
         .runAction(this.component.orders.verifyCheckout, componentArgs)
@@ -177,6 +190,7 @@ export class Razorpay {
       }),
   };
 
+  /** Reads, lists and captures Razorpay payments. */
   readonly payments = {
     /** Fetches a payment without storing the provider response. */
     fetch: (
@@ -185,7 +199,7 @@ export class Razorpay {
     ) => {
       const componentArgs = {
         razorpayPaymentId: args.razorpayPaymentId,
-        ...(this.options.testMode === undefined ? {} : { testMode: this.options.testMode }),
+        testMode: this.options.testMode,
       };
       return ctx.runAction(this.component.payments.fetch, componentArgs);
     },
@@ -198,7 +212,7 @@ export class Razorpay {
         razorpayPaymentId: args.razorpayPaymentId,
         amount: args.amount,
         currency: args.currency,
-        ...(this.options.testMode === undefined ? {} : { testMode: this.options.testMode }),
+        testMode: this.options.testMode,
       };
       return ctx
         .runAction(this.component.payments.capture, componentArgs)
@@ -210,9 +224,9 @@ export class Razorpay {
       args: Omit<FunctionArgs<ComponentApi["payments"]["fetchAll"]>, "testMode">,
     ) => {
       const componentArgs = {
-        ...(args.count === undefined ? {} : { count: args.count }),
-        ...(args.skip === undefined ? {} : { skip: args.skip }),
-        ...(this.options.testMode === undefined ? {} : { testMode: this.options.testMode }),
+        count: args.count,
+        skip: args.skip,
+        testMode: this.options.testMode,
       };
       return ctx.runAction(this.component.payments.fetchAll, componentArgs);
     },
@@ -226,11 +240,9 @@ export class Razorpay {
         paginationOpts: {
           numItems: args.paginationOpts.numItems,
           cursor: args.paginationOpts.cursor,
-          ...(args.paginationOpts.endCursor === undefined
-            ? {}
-            : { endCursor: args.paginationOpts.endCursor }),
+          endCursor: args.paginationOpts.endCursor,
         },
-        ...(this.options.testMode === undefined ? {} : { testMode: this.options.testMode }),
+        testMode: this.options.testMode,
       };
       return ctx.runQuery(this.component.payments.list, componentArgs).then((result) => ({
         ...result,
@@ -239,6 +251,7 @@ export class Razorpay {
     },
   };
 
+  /** Creates and reads Razorpay refunds. */
   readonly refunds = {
     /** Creates a refund and stores its mirror. */
     create: (
@@ -249,13 +262,13 @@ export class Razorpay {
         razorpayPaymentId: args.razorpayPaymentId,
         amount: args.amount,
         speed: args.speed,
-        ...(args.receipt === undefined ? {} : { receipt: args.receipt }),
-        ...(args.notes === undefined ? {} : { notes: args.notes }),
-        ...(args.userId === undefined ? {} : { userId: args.userId }),
-        ...(args.externalId === undefined ? {} : { externalId: args.externalId }),
-        ...(args.metadata === undefined ? {} : { metadata: args.metadata }),
-        ...(args.idempotencyKey === undefined ? {} : { idempotencyKey: args.idempotencyKey }),
-        ...(this.options.testMode === undefined ? {} : { testMode: this.options.testMode }),
+        receipt: args.receipt,
+        notes: args.notes,
+        userId: args.userId,
+        externalId: args.externalId,
+        metadata: args.metadata,
+        idempotencyKey: args.idempotencyKey,
+        testMode: this.options.testMode,
       };
       return ctx
         .runAction(this.component.refunds.create, componentArgs)
@@ -268,12 +281,13 @@ export class Razorpay {
     ) => {
       const componentArgs = {
         razorpayRefundId: args.razorpayRefundId,
-        ...(this.options.testMode === undefined ? {} : { testMode: this.options.testMode }),
+        testMode: this.options.testMode,
       };
       return ctx.runAction(this.component.refunds.fetch, componentArgs);
     },
   };
 
+  /** Creates, reads and edits Razorpay customers. */
   readonly customers = {
     /** Creates a customer and stores its mirror. */
     create: (
@@ -283,14 +297,14 @@ export class Razorpay {
       const componentArgs = {
         name: args.name,
         email: args.email,
-        ...(args.contact === undefined ? {} : { contact: args.contact }),
-        ...(args.gstin === undefined ? {} : { gstin: args.gstin }),
-        ...(args.notes === undefined ? {} : { notes: args.notes }),
-        ...(args.userId === undefined ? {} : { userId: args.userId }),
-        ...(args.externalId === undefined ? {} : { externalId: args.externalId }),
-        ...(args.metadata === undefined ? {} : { metadata: args.metadata }),
-        ...(args.idempotencyKey === undefined ? {} : { idempotencyKey: args.idempotencyKey }),
-        ...(this.options.testMode === undefined ? {} : { testMode: this.options.testMode }),
+        contact: args.contact,
+        gstin: args.gstin,
+        notes: args.notes,
+        userId: args.userId,
+        externalId: args.externalId,
+        metadata: args.metadata,
+        idempotencyKey: args.idempotencyKey,
+        testMode: this.options.testMode,
       };
       return ctx
         .runAction(this.component.customers.create, componentArgs)
@@ -304,14 +318,14 @@ export class Razorpay {
       const componentArgs = {
         name: args.name,
         email: args.email,
-        ...(args.contact === undefined ? {} : { contact: args.contact }),
-        ...(args.gstin === undefined ? {} : { gstin: args.gstin }),
-        ...(args.notes === undefined ? {} : { notes: args.notes }),
-        ...(args.userId === undefined ? {} : { userId: args.userId }),
-        ...(args.externalId === undefined ? {} : { externalId: args.externalId }),
-        ...(args.metadata === undefined ? {} : { metadata: args.metadata }),
-        ...(args.idempotencyKey === undefined ? {} : { idempotencyKey: args.idempotencyKey }),
-        ...(this.options.testMode === undefined ? {} : { testMode: this.options.testMode }),
+        contact: args.contact,
+        gstin: args.gstin,
+        notes: args.notes,
+        userId: args.userId,
+        externalId: args.externalId,
+        metadata: args.metadata,
+        idempotencyKey: args.idempotencyKey,
+        testMode: this.options.testMode,
       };
       return ctx
         .runAction(this.component.customers.getOrCreate, componentArgs)
@@ -324,7 +338,7 @@ export class Razorpay {
     ) => {
       const componentArgs = {
         razorpayCustomerId: args.razorpayCustomerId,
-        ...(this.options.testMode === undefined ? {} : { testMode: this.options.testMode }),
+        testMode: this.options.testMode,
       };
       return ctx.runAction(this.component.customers.fetch, componentArgs);
     },
@@ -335,10 +349,10 @@ export class Razorpay {
     ) => {
       const componentArgs = {
         razorpayCustomerId: args.razorpayCustomerId,
-        ...(args.name === undefined ? {} : { name: args.name }),
-        ...(args.email === undefined ? {} : { email: args.email }),
-        ...(args.contact === undefined ? {} : { contact: args.contact }),
-        ...(this.options.testMode === undefined ? {} : { testMode: this.options.testMode }),
+        name: args.name,
+        email: args.email,
+        contact: args.contact,
+        testMode: this.options.testMode,
       };
       return ctx
         .runAction(this.component.customers.edit, componentArgs)
@@ -351,7 +365,7 @@ export class Razorpay {
     ) => {
       const componentArgs = {
         userId: args.userId,
-        ...(this.options.testMode === undefined ? {} : { testMode: this.options.testMode }),
+        testMode: this.options.testMode,
       };
       return ctx
         .runQuery(this.component.customers.get, componentArgs)
@@ -359,6 +373,7 @@ export class Razorpay {
     },
   };
 
+  /** Creates and reads Razorpay plans. */
   readonly plans = {
     /** Creates a plan and stores its mirror. */
     create: (
@@ -372,14 +387,14 @@ export class Razorpay {
           name: args.item.name,
           amount: args.item.amount,
           currency: args.item.currency,
-          ...(args.item.description === undefined ? {} : { description: args.item.description }),
+          description: args.item.description,
         },
-        ...(args.notes === undefined ? {} : { notes: args.notes }),
-        ...(args.userId === undefined ? {} : { userId: args.userId }),
-        ...(args.externalId === undefined ? {} : { externalId: args.externalId }),
-        ...(args.metadata === undefined ? {} : { metadata: args.metadata }),
-        ...(args.idempotencyKey === undefined ? {} : { idempotencyKey: args.idempotencyKey }),
-        ...(this.options.testMode === undefined ? {} : { testMode: this.options.testMode }),
+        notes: args.notes,
+        userId: args.userId,
+        externalId: args.externalId,
+        metadata: args.metadata,
+        idempotencyKey: args.idempotencyKey,
+        testMode: this.options.testMode,
       };
       return ctx
         .runAction(this.component.plans.create, componentArgs)
@@ -392,7 +407,7 @@ export class Razorpay {
     ) => {
       const componentArgs = {
         razorpayPlanId: args.razorpayPlanId,
-        ...(this.options.testMode === undefined ? {} : { testMode: this.options.testMode }),
+        testMode: this.options.testMode,
       };
       return ctx.runAction(this.component.plans.fetch, componentArgs);
     },
@@ -402,9 +417,9 @@ export class Razorpay {
       args: Omit<FunctionArgs<ComponentApi["plans"]["fetchAll"]>, "testMode">,
     ) => {
       const componentArgs = {
-        ...(args.count === undefined ? {} : { count: args.count }),
-        ...(args.skip === undefined ? {} : { skip: args.skip }),
-        ...(this.options.testMode === undefined ? {} : { testMode: this.options.testMode }),
+        count: args.count,
+        skip: args.skip,
+        testMode: this.options.testMode,
       };
       return ctx.runAction(this.component.plans.fetchAll, componentArgs);
     },
@@ -419,6 +434,7 @@ export class Razorpay {
       }),
   };
 
+  /** Creates, reads, changes and cancels Razorpay subscriptions and verifies their Checkout payments. */
   readonly subscriptions = {
     /** Creates a subscription and stores its mirror. */
     create: (
@@ -429,16 +445,16 @@ export class Razorpay {
         razorpayPlanId: args.razorpayPlanId,
         totalCount: args.totalCount,
         quantity: args.quantity,
-        ...(args.startAt === undefined ? {} : { startAt: args.startAt }),
-        ...(args.expiresAt === undefined ? {} : { expiresAt: args.expiresAt }),
+        startAt: args.startAt,
+        expiresAt: args.expiresAt,
         customerNotify: args.customerNotify,
-        ...(args.razorpayOfferId === undefined ? {} : { razorpayOfferId: args.razorpayOfferId }),
-        ...(args.notes === undefined ? {} : { notes: args.notes }),
-        ...(args.userId === undefined ? {} : { userId: args.userId }),
-        ...(args.externalId === undefined ? {} : { externalId: args.externalId }),
-        ...(args.metadata === undefined ? {} : { metadata: args.metadata }),
-        ...(args.idempotencyKey === undefined ? {} : { idempotencyKey: args.idempotencyKey }),
-        ...(this.options.testMode === undefined ? {} : { testMode: this.options.testMode }),
+        razorpayOfferId: args.razorpayOfferId,
+        notes: args.notes,
+        userId: args.userId,
+        externalId: args.externalId,
+        metadata: args.metadata,
+        idempotencyKey: args.idempotencyKey,
+        testMode: this.options.testMode,
       };
       return ctx
         .runAction(this.component.subscriptions.create, componentArgs)
@@ -451,7 +467,7 @@ export class Razorpay {
     ) => {
       const componentArgs = {
         razorpaySubscriptionId: args.razorpaySubscriptionId,
-        ...(this.options.testMode === undefined ? {} : { testMode: this.options.testMode }),
+        testMode: this.options.testMode,
       };
       return ctx.runAction(this.component.subscriptions.fetch, componentArgs);
     },
@@ -462,7 +478,7 @@ export class Razorpay {
     ) => {
       const componentArgs = {
         razorpaySubscriptionId: args.razorpaySubscriptionId,
-        ...(this.options.testMode === undefined ? {} : { testMode: this.options.testMode }),
+        testMode: this.options.testMode,
       };
       return ctx
         .runAction(this.component.subscriptions.cancel, componentArgs)
@@ -475,7 +491,7 @@ export class Razorpay {
     ) => {
       const componentArgs = {
         razorpaySubscriptionId: args.razorpaySubscriptionId,
-        ...(this.options.testMode === undefined ? {} : { testMode: this.options.testMode }),
+        testMode: this.options.testMode,
       };
       return ctx
         .runAction(this.component.subscriptions.cancelAtCycleEnd, componentArgs)
@@ -488,7 +504,7 @@ export class Razorpay {
     ) => {
       const componentArgs = {
         razorpaySubscriptionId: args.razorpaySubscriptionId,
-        ...(this.options.testMode === undefined ? {} : { testMode: this.options.testMode }),
+        testMode: this.options.testMode,
       };
       return ctx
         .runAction(this.component.subscriptions.pause, componentArgs)
@@ -501,7 +517,7 @@ export class Razorpay {
     ) => {
       const componentArgs = {
         razorpaySubscriptionId: args.razorpaySubscriptionId,
-        ...(this.options.testMode === undefined ? {} : { testMode: this.options.testMode }),
+        testMode: this.options.testMode,
       };
       return ctx
         .runAction(this.component.subscriptions.resume, componentArgs)
@@ -514,14 +530,14 @@ export class Razorpay {
     ) => {
       const componentArgs = {
         razorpaySubscriptionId: args.razorpaySubscriptionId,
-        ...(args.razorpayPlanId === undefined ? {} : { razorpayPlanId: args.razorpayPlanId }),
-        ...(args.razorpayOfferId === undefined ? {} : { razorpayOfferId: args.razorpayOfferId }),
-        ...(args.quantity === undefined ? {} : { quantity: args.quantity }),
-        ...(args.remainingCount === undefined ? {} : { remainingCount: args.remainingCount }),
-        ...(args.startAt === undefined ? {} : { startAt: args.startAt }),
+        razorpayPlanId: args.razorpayPlanId,
+        razorpayOfferId: args.razorpayOfferId,
+        quantity: args.quantity,
+        remainingCount: args.remainingCount,
+        startAt: args.startAt,
         scheduleChangeAt: args.scheduleChangeAt,
-        ...(args.customerNotify === undefined ? {} : { customerNotify: args.customerNotify }),
-        ...(this.options.testMode === undefined ? {} : { testMode: this.options.testMode }),
+        customerNotify: args.customerNotify,
+        testMode: this.options.testMode,
       };
       return ctx
         .runAction(this.component.subscriptions.update, componentArgs)
@@ -534,8 +550,8 @@ export class Razorpay {
     ) => {
       const componentArgs = {
         userId: args.userId,
-        ...(args.statuses === undefined ? {} : { statuses: args.statuses }),
-        ...(this.options.testMode === undefined ? {} : { testMode: this.options.testMode }),
+        statuses: args.statuses,
+        testMode: this.options.testMode,
       };
       return ctx
         .runQuery(this.component.subscriptions.get, componentArgs)
@@ -553,11 +569,9 @@ export class Razorpay {
         paginationOpts: {
           numItems: args.paginationOpts.numItems,
           cursor: args.paginationOpts.cursor,
-          ...(args.paginationOpts.endCursor === undefined
-            ? {}
-            : { endCursor: args.paginationOpts.endCursor }),
+          endCursor: args.paginationOpts.endCursor,
         },
-        ...(this.options.testMode === undefined ? {} : { testMode: this.options.testMode }),
+        testMode: this.options.testMode,
       };
       return ctx.runQuery(this.component.subscriptions.list, componentArgs).then((result) => ({
         ...result,
@@ -573,8 +587,8 @@ export class Razorpay {
         razorpaySubscriptionId: args.razorpaySubscriptionId,
         razorpayPaymentId: args.razorpayPaymentId,
         signature: args.signature,
-        ...(args.userId === undefined ? {} : { userId: args.userId }),
-        ...(this.options.testMode === undefined ? {} : { testMode: this.options.testMode }),
+        userId: args.userId,
+        testMode: this.options.testMode,
       };
       return ctx
         .runAction(this.component.subscriptions.verifyCheckout, componentArgs)
@@ -591,6 +605,7 @@ export class Razorpay {
       }),
   };
 
+  /** Verifies Razorpay payment link callback signatures. */
   readonly paymentLinks = {
     /** Verifies a payment link callback signature. */
     verifyCheckout: (
@@ -611,10 +626,8 @@ export class Razorpay {
   /** Registers the signed Razorpay webhook route and optional event callback. */
   registerRoutes(http: HttpRouter, options: RegisterRoutesOptions = {}) {
     return registerRoutes(http, this.component, {
-      ...options,
-      ...((options.onEvent ?? this.options.onEvent)
-        ? { onEvent: options.onEvent ?? this.options.onEvent }
-        : {}),
+      path: options.path,
+      onEvent: options.onEvent ?? this.options.onEvent,
     });
   }
 }
@@ -686,7 +699,7 @@ export function registerRoutes(
           body,
           signature,
           eventId,
-          ...(callbackHandle === undefined ? {} : { callbackHandle }),
+          callbackHandle,
         };
         await ctx.runAction(component.webhooks.ingest, ingestArgs);
       } catch (error) {

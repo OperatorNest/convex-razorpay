@@ -1,7 +1,8 @@
 import { parseProviderResponse } from "../shared/providerErrors.js";
 import { razorpayError } from "../shared/errors.js";
 
-import { integerField, record, stringField, truncateText } from "../shared/validation.js";
+import { truncateText } from "../shared/bounds.js";
+import { integerField, record, stringField } from "../shared/validation.js";
 
 type ProviderKind = "order" | "payment" | "refund" | "customer" | "plan" | "subscription";
 

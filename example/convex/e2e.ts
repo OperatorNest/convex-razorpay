@@ -3,27 +3,21 @@ import { ConvexError, v } from "convex/values";
 import { components } from "./_generated/api.js";
 import { env, internalAction, internalQuery } from "./_generated/server.js";
 
-const razorpay = new Razorpay(components.razorpay, { testMode: false });
+const razorpay = new Razorpay(components.razorpay);
 
 function assertProviderMode() {
-  if (
-    env.RAZORPAY_TEST_MODE === "true" ||
-    !env.RAZORPAY_KEY_ID?.startsWith("rzp_test_") ||
-    !env.RAZORPAY_KEY_SECRET
-  ) {
+  if (!env.RAZORPAY_KEY_ID?.startsWith("rzp_test_") || !env.RAZORPAY_KEY_SECRET) {
     throw new ConvexError({
       code: "E2E_VERIFICATION_MODE_REQUIRED",
-      message:
-        "End-to-end verification requires Razorpay sandbox credentials and disabled local test mode",
+      message: "End-to-end verification requires Razorpay sandbox credentials",
     });
   }
 }
 
 export const environment = internalQuery({
   args: {},
-  returns: v.object({ testMode: v.boolean(), keyIdConfigured: v.boolean(), testKey: v.boolean() }),
+  returns: v.object({ keyIdConfigured: v.boolean(), testKey: v.boolean() }),
   handler: () => ({
-    testMode: env.RAZORPAY_TEST_MODE === "true",
     keyIdConfigured: Boolean(env.RAZORPAY_KEY_ID),
     testKey: env.RAZORPAY_KEY_ID?.startsWith("rzp_test_") ?? false,
   }),

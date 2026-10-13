@@ -1,6 +1,12 @@
 import schema from "../../example/convex/schema.js";
 import componentSchema from "./schema.js";
-import { stubRazorpayEnv, restoreRazorpayTestState } from "../test-helpers.js";
+import {
+  stubRazorpayEnv,
+  restoreRazorpayTestState,
+  stubLiveRazorpayEnv,
+  stubSimulatedRazorpayEnv,
+  expectRazorpayError,
+} from "../test-helpers.js";
 import { register } from "@operatornest/convex-razorpay/test";
 import { computeHmacSha256Hex } from "@operatornest/convex-razorpay";
 import { convexTest } from "convex-test";
@@ -56,12 +62,13 @@ test("keyed plan create reuses completed result and rejects changed body", async
   const retry = await t.action(components.razorpay.plans.create, planArgs);
   expect(retry.razorpayPlanId).toBe(first.razorpayPlanId);
   expect(fetch).toHaveBeenCalledTimes(1);
-  await expect(
+  await expectRazorpayError(
     t.action(components.razorpay.plans.create, {
       ...planArgs,
       item: { ...planArgs.item, amount: 79900 },
     }),
-  ).rejects.toThrow();
+    "RAZORPAY_IDEMPOTENCY_CONFLICT",
+  );
   expect(fetch).toHaveBeenCalledTimes(1);
 });
 
@@ -78,20 +85,22 @@ test("uncertain keyed subscription result stays reserved before a retry", async 
   vi.stubGlobal("fetch", fetch);
   const t = convexTest(schema, modules);
   register(t);
-  await expect(
+  await expectRazorpayError(
     t.action(components.razorpay.subscriptions.create, {
       quantity: 1,
       customerNotify: true,
       ...subscriptionArgs,
     }),
-  ).rejects.toThrow();
-  await expect(
+    "RAZORPAY_PROVIDER_ERROR",
+  );
+  await expectRazorpayError(
     t.action(components.razorpay.subscriptions.create, {
       quantity: 1,
       customerNotify: true,
       ...subscriptionArgs,
     }),
-  ).rejects.toThrow();
+    "RAZORPAY_IDEMPOTENCY_PENDING",
+  );
   expect(fetch).toHaveBeenCalledTimes(1);
 });
 
@@ -121,7 +130,10 @@ test("definitive plan 4xx releases the key for a corrected request", async () =>
   vi.stubGlobal("fetch", fetch);
   const t = convexTest(schema, modules);
   register(t);
-  await expect(t.action(components.razorpay.plans.create, planArgs)).rejects.toThrow();
+  await expectRazorpayError(
+    t.action(components.razorpay.plans.create, planArgs),
+    "RAZORPAY_PROVIDER_ERROR",
+  );
   const corrected = await t.action(components.razorpay.plans.create, {
     ...planArgs,
     item: { ...planArgs.item, amount: 79900 },
@@ -153,7 +165,10 @@ test("definitive plan 4xx releases the key for an identical retry", async () => 
   vi.stubGlobal("fetch", fetch);
   const t = convexTest(schema, modules);
   register(t);
-  await expect(t.action(components.razorpay.plans.create, planArgs)).rejects.toThrow();
+  await expectRazorpayError(
+    t.action(components.razorpay.plans.create, planArgs),
+    "RAZORPAY_PROVIDER_ERROR",
+  );
   const retry = await t.action(components.razorpay.plans.create, planArgs);
   expect(retry.razorpayPlanId).toBe("plan_same_request_retry");
   expect(fetch).toHaveBeenCalledTimes(2);
@@ -164,12 +179,13 @@ test("caller metadata cannot set the reserved idempotency note", async () => {
   vi.stubGlobal("fetch", fetch);
   const t = convexTest(schema, modules);
   register(t);
-  await expect(
+  await expectRazorpayError(
     t.action(components.razorpay.plans.create, {
       ...planArgs,
       metadata: { operatornestIdempotencyKey: "caller-overwrite" },
     }),
-  ).rejects.toMatchObject({ data: { code: "RAZORPAY_INVALID_ARGUMENT" } });
+    "RAZORPAY_INVALID_ARGUMENT",
+  );
   expect(fetch).not.toHaveBeenCalled();
 });
 
@@ -185,9 +201,13 @@ test.each([409, 429])(
     vi.stubGlobal("fetch", fetch);
     const t = convexTest(schema, modules);
     register(t);
-    await expect(t.action(components.razorpay.plans.create, planArgs)).rejects.toThrow();
-    await expect(t.action(components.razorpay.plans.create, planArgs)).rejects.toThrow(
-      /pending or unknown/i,
+    await expectRazorpayError(
+      t.action(components.razorpay.plans.create, planArgs),
+      "RAZORPAY_PROVIDER_ERROR",
+    );
+    await expectRazorpayError(
+      t.action(components.razorpay.plans.create, planArgs),
+      "RAZORPAY_IDEMPOTENCY_PENDING",
     );
     expect(fetch).toHaveBeenCalledTimes(1);
   },
@@ -225,7 +245,10 @@ test("stale plan claim reconciles note key before posting and tolerates unrelate
   vi.stubGlobal("fetch", fetch);
   const t = convexTest(schema, modules);
   register(t);
-  await expect(t.action(components.razorpay.plans.create, planArgs)).rejects.toThrow();
+  await expectRazorpayError(
+    t.action(components.razorpay.plans.create, planArgs),
+    "RAZORPAY_PROVIDER_ERROR",
+  );
   vi.setSystemTime(Date.now() + 11 * 60_000);
   const recovered = await t.action(components.razorpay.plans.create, planArgs);
   expect(recovered.razorpayPlanId).toBe("plan_recovered");
@@ -261,11 +284,15 @@ test("stale plan lookup remains pending when the provider scan finds no match", 
   vi.stubGlobal("fetch", fetch);
   const t = convexTest(schema, modules);
   register(t);
-  await expect(t.action(components.razorpay.plans.create, planArgs)).rejects.toThrow();
+  await expectRazorpayError(
+    t.action(components.razorpay.plans.create, planArgs),
+    "RAZORPAY_PROVIDER_ERROR",
+  );
   vi.setSystemTime(Date.now() + 11 * 60_000);
-  await expect(t.action(components.razorpay.plans.create, planArgs)).rejects.toMatchObject({
-    data: { code: "RAZORPAY_IDEMPOTENCY_PENDING" },
-  });
+  await expectRazorpayError(
+    t.action(components.razorpay.plans.create, planArgs),
+    "RAZORPAY_IDEMPOTENCY_PENDING",
+  );
   expect(fetch).toHaveBeenCalledTimes(2);
 });
 
@@ -286,10 +313,14 @@ test("a full bounded plan reconciliation scan never assumes absence or reposts",
   vi.stubGlobal("fetch", fetch);
   const t = convexTest(schema, modules);
   register(t);
-  await expect(t.action(components.razorpay.plans.create, planArgs)).rejects.toThrow();
+  await expectRazorpayError(
+    t.action(components.razorpay.plans.create, planArgs),
+    "RAZORPAY_PROVIDER_ERROR",
+  );
   vi.setSystemTime(Date.now() + 11 * 60_000);
-  await expect(t.action(components.razorpay.plans.create, planArgs)).rejects.toThrow(
-    "The create outcome is pending or unknown; reconcile before retrying.",
+  await expectRazorpayError(
+    t.action(components.razorpay.plans.create, planArgs),
+    "RAZORPAY_IDEMPOTENCY_PENDING",
   );
   expect(fetch).toHaveBeenCalledTimes(21);
 });
@@ -328,13 +359,14 @@ test("stale subscription claim reconciles provider notes before reposting", asyn
   vi.stubGlobal("fetch", fetch);
   const t = convexTest(schema, modules);
   register(t);
-  await expect(
+  await expectRazorpayError(
     t.action(components.razorpay.subscriptions.create, {
       quantity: 1,
       customerNotify: true,
       ...subscriptionArgs,
     }),
-  ).rejects.toThrow();
+    "RAZORPAY_PROVIDER_ERROR",
+  );
   vi.setSystemTime(Date.now() + 11 * 60_000);
   const recovered = await t.action(components.razorpay.subscriptions.create, {
     quantity: 1,
@@ -371,7 +403,10 @@ test("support can release a pending idempotency claim for a manually resolved ke
   vi.stubGlobal("fetch", fetch);
   const t = convexTest(schema, modules);
   register(t);
-  await expect(t.action(components.razorpay.plans.create, planArgs)).rejects.toThrow();
+  await expectRazorpayError(
+    t.action(components.razorpay.plans.create, planArgs),
+    "RAZORPAY_PROVIDER_ERROR",
+  );
   expect(
     await t.mutation(components.razorpay.plans.releaseIdempotency, {
       idempotencyKey: planArgs.idempotencyKey,
@@ -414,36 +449,36 @@ test("refund creation derives its provider key from receipt and rejects keyless 
   expect(providerKey).toMatchObject({
     "X-Refund-Idempotency": expect.stringMatching(/^receipt_[0-9a-f]{64}$/),
   });
-  await expect(
+  await expectRazorpayError(
     t.action(components.razorpay.refunds.create, {
       speed: "normal",
       razorpayPaymentId: "pay_refund_target",
       amount: 100,
     }),
-  ).rejects.toMatchObject({
-    data: { code: "RAZORPAY_IDEMPOTENCY_REQUIRED" },
-  });
-  await expect(
+    "RAZORPAY_IDEMPOTENCY_REQUIRED",
+  );
+  await expectRazorpayError(
     t.action(components.razorpay.refunds.create, {
       speed: "normal",
       razorpayPaymentId: "pay_refund_target",
       amount: 100,
       idempotencyKey: "short-key",
     }),
-  ).rejects.toMatchObject({ data: { code: "RAZORPAY_INVALID_ARGUMENT" } });
+    "RAZORPAY_INVALID_ARGUMENT",
+  );
   expect(fetch).toHaveBeenCalledTimes(1);
 });
 
-test("mode changes isolate claims while customer and refund mirrors reject opposite mode", async () => {
+test("a live-mode retry of a simulated key reaches the provider for every keyed resource", async () => {
   const fetch = vi.fn(async () => {
-    throw new Error("Unexpected provider POST on a mode mismatch");
+    throw new TypeError("The live provider is unreachable in this fixture.");
   });
   vi.stubGlobal("fetch", fetch);
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(1_567_674_660_000);
   const t = convexTest(schema, modules);
   register(t);
-  vi.stubEnv("RAZORPAY_WEBHOOK_SECRET", "whsec_mode_fixture");
-
-  vi.stubEnv("RAZORPAY_TEST_MODE", "true");
+  stubRazorpayEnv({ webhookSecret: "whsec_mode_fixture", testMode: "true" });
   const paymentEvent = JSON.stringify({
     entity: "event",
     event: "payment.captured",
@@ -556,15 +591,15 @@ test("mode changes isolate claims while customer and refund mirrors reject oppos
     },
   ];
   await Promise.all(cases.map(({ create }) => create()));
-  vi.stubEnv("RAZORPAY_TEST_MODE", "false");
+  stubRazorpayEnv({
+    keyId: "rzp_live_fixture",
+    keySecret: "fake_secret",
+    webhookSecret: "whsec_mode_fixture",
+  });
   await Promise.all(
-    cases.map(({ retry }, index) =>
-      expect(retry()).rejects.toMatchObject({
-        data: { code: index < 3 ? "RAZORPAY_NETWORK_ERROR" : "RAZORPAY_MODE_MISMATCH" },
-      }),
-    ),
+    cases.map(({ retry }) => expectRazorpayError(retry(), "RAZORPAY_NETWORK_ERROR")),
   );
-  expect(fetch).toHaveBeenCalledTimes(3);
+  expect(fetch).toHaveBeenCalledTimes(5);
 });
 
 test("a configured secret without a key id fails as not configured", async () => {
@@ -572,17 +607,16 @@ test("a configured secret without a key id fails as not configured", async () =>
   vi.stubEnv("RAZORPAY_KEY_SECRET", "fabricated_secret");
   const t = convexTest(schema, modules);
   register(t);
-  await expect(t.action(components.razorpay.plans.create, planArgs)).rejects.toMatchObject({
-    data: { code: "RAZORPAY_NOT_CONFIGURED" },
-  });
+  await expectRazorpayError(
+    t.action(components.razorpay.plans.create, planArgs),
+    "RAZORPAY_NOT_CONFIGURED",
+  );
 });
 
 describe("idempotency", () => {
   const componentModules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
   const harness = () => convexTest(componentSchema, componentModules);
-
-  const invalid = { data: { code: "RAZORPAY_INVALID_ARGUMENT" } };
 
   const subscription = {
     entity: "subscription",
@@ -621,7 +655,7 @@ describe("idempotency", () => {
       idempotencyKey: "victim_key_123",
       requestFingerprint: "victim",
     });
-    await expect(
+    await expectRazorpayError(
       t.action(api.orders.create, {
         partialPayment: false,
         amount: 1000,
@@ -629,7 +663,8 @@ describe("idempotency", () => {
         notes: { operatornestIdempotencyKey: "victim_key_123" },
         testMode: true,
       }),
-    ).rejects.toMatchObject(invalid);
+      "RAZORPAY_INVALID_ARGUMENT",
+    );
     expect(await t.run((ctx) => ctx.db.query("idempotencyRequests").first())).toMatchObject({
       status: "pending",
     });
@@ -644,6 +679,7 @@ describe("idempotency", () => {
       requestFingerprint: "victim",
     });
     await t.mutation(internal.mutations.putOrder, {
+      testMode: false,
       raw: {
         entity: "order",
         id: "order_attacker",
@@ -663,8 +699,13 @@ describe("idempotency", () => {
     "subscription fetch applies current %s state regardless of local observation time",
     async (status) => {
       const t = harness();
-      await t.mutation(internal.mutations.putSubscription, { raw: subscription, observedAt: 200 });
+      await t.mutation(internal.mutations.putSubscription, {
+        testMode: false,
+        raw: subscription,
+        observedAt: 200,
+      });
       const row = await t.mutation(internal.mutations.putSubscription, {
+        testMode: false,
         raw: { ...subscription, status, quantity: 1 },
         observedAt: 100,
       });
@@ -679,13 +720,14 @@ describe("idempotency", () => {
       observedAt: 100,
       testMode: false,
     });
-    await expect(
+    await expectRazorpayError(
       t.mutation(internal.mutations.putPayment, {
         raw: { ...payment, status: "captured", captured: true },
         observedAt: 200,
         testMode: true,
       }),
-    ).rejects.toMatchObject({ data: { code: "RAZORPAY_MODE_MISMATCH" } });
+      "RAZORPAY_MODE_MISMATCH",
+    );
     expect(await t.run((ctx) => ctx.db.query("payments").first())).toMatchObject({
       status: "authorized",
       testMode: false,
@@ -706,8 +748,8 @@ describe("idempotency", () => {
     const b = classifyProviderError(400, {
       error: { code: "BAD_REQUEST_ERROR", description: "other value" },
     });
-    expect(a.message).toBe(b.message);
-    expect(a).toMatchObject({ providerStatus: 400, providerCode: "BAD_REQUEST_ERROR" });
+    expect(a.data.message).toBe(b.data.message);
+    expect(a.data).toMatchObject({ providerStatus: 400, providerCode: "BAD_REQUEST_ERROR" });
   });
 });
 
@@ -715,8 +757,6 @@ describe("idempotency", () => {
   const componentModules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
   const harness = () => convexTest(componentSchema, componentModules);
-
-  const pending = { data: { code: "RAZORPAY_IDEMPOTENCY_PENDING" } };
 
   const order = {
     entity: "order",
@@ -797,7 +837,9 @@ describe("idempotency", () => {
     async ({ create, raw, resource }) => {
       const t = harness();
       const keyed = { idempotencyKey: "fixture_mode_key" };
-      const simulated = await create(t, { ...keyed, testMode: true });
+      stubSimulatedRazorpayEnv();
+      const simulated = await create(t, keyed);
+      stubLiveRazorpayEnv();
       vi.stubGlobal(
         "fetch",
         vi.fn(() =>
@@ -806,12 +848,14 @@ describe("idempotency", () => {
           ),
         ),
       );
-      const live = await create(t, { ...keyed, testMode: false });
+      const live = await create(t, keyed);
       expect(live).toMatchObject(
         resource === "order" ? { order: { testMode: false } } : { testMode: false },
       );
-      expect(await create(t, { ...keyed, testMode: true })).toEqual(simulated);
-      expect(await create(t, { ...keyed, testMode: false })).toEqual(live);
+      stubSimulatedRazorpayEnv();
+      expect(await create(t, keyed)).toEqual(simulated);
+      stubLiveRazorpayEnv();
+      expect(await create(t, keyed)).toEqual(live);
       const claims = await t.run((ctx) => ctx.db.query("idempotencyRequests").take(10));
       expect(claims).toHaveLength(2);
       expect(new Set(claims.map((claim) => claim.requestFingerprint)).size).toBe(2);
@@ -832,11 +876,9 @@ describe("idempotency", () => {
       });
       vi.stubGlobal("fetch", fetch);
       const keyed = { idempotencyKey: "fixture_unknown_key" };
-      await expect(create(t, keyed)).rejects.toMatchObject({
-        data: { code: "RAZORPAY_NETWORK_ERROR" },
-      });
+      await expectRazorpayError(create(t, keyed), "RAZORPAY_NETWORK_ERROR");
       vi.setSystemTime(1_660_000);
-      await expect(create(t, keyed)).rejects.toMatchObject(pending);
+      await expectRazorpayError(create(t, keyed), "RAZORPAY_IDEMPOTENCY_PENDING");
       expect(fetch.mock.calls.map(([, init]) => init.method)).toEqual(["POST", "GET"]);
       expect(await t.run((ctx) => ctx.db.query("idempotencyRequests").first())).toMatchObject({
         status: "pending",

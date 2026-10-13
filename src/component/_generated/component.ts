@@ -603,6 +603,8 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             userId?: string;
             verified: boolean;
           }>;
+          pageStatus?: "SplitRecommended" | "SplitRequired" | null;
+          splitCursor?: string | null;
         },
         Name
       >;
@@ -1114,6 +1116,8 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             totalCount: number;
             userId?: string;
           }>;
+          pageStatus?: "SplitRecommended" | "SplitRequired" | null;
+          splitCursor?: string | null;
         },
         Name
       >;
@@ -1339,13 +1343,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       >;
     };
     webhooks: {
-      cleanup: FunctionReference<
-        "mutation",
-        "internal",
-        { batchSize?: number; before?: number },
-        number,
-        Name
-      >;
       ingest: FunctionReference<
         "action",
         "internal",

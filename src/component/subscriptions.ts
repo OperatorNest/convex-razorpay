@@ -1,6 +1,6 @@
 import { parseProviderResponse } from "../shared/providerErrors.js";
-import { paginationOptsValidator } from "convex/server";
-import { boundedPage } from "./pagination.js";
+import { paginationOptsValidator, paginationResultValidator } from "convex/server";
+import { boundedPage } from "../shared/bounds.js";
 import { paginator } from "convex-helpers/server/pagination";
 import { subscriptionFields } from "./mapping.js";
 import schema from "./schema.js";
@@ -14,8 +14,8 @@ import { internal } from "./_generated/api.js";
 import {
   assertModeMatches,
   findByIdempotencyKey,
-  isTestMode,
-  resolveMode,
+  readTestMode,
+  resolveProviderMode,
   requestProvider,
 } from "./provider.js";
 import {
@@ -34,7 +34,7 @@ import {
   optionalLinkage,
   timestampSeconds,
 } from "./validators.js";
-import { readConfig, requireConfigValue } from "./config.js";
+import { readConfig, requireConfigValue } from "../shared/config.js";
 import { verifySubscriptionCheckout } from "../shared/crypto.js";
 
 export const reconcile = internalAction({
@@ -44,6 +44,7 @@ export const reconcile = internalAction({
     userId: v.optional(v.string()),
     externalId: v.optional(v.string()),
     metadata: v.optional(v.record(v.string(), v.string())),
+    testMode: v.boolean(),
   },
   returns: schema.doc("subscriptions"),
   handler: async (ctx, args): Promise<Doc<"subscriptions">> => {
@@ -56,7 +57,7 @@ export const reconcile = internalAction({
         idempotencyKey: args.idempotencyKey,
         requestFingerprint: args.requestFingerprint,
         createdThroughComponent: true,
-        testMode: false,
+        testMode: args.testMode,
       }),
     });
   },
@@ -77,7 +78,7 @@ export const create = action({
   returns: schema.doc("subscriptions"),
   handler: async (ctx, args): Promise<Doc<"subscriptions">> => {
     validateIdempotencyKey(args.idempotencyKey);
-    const testMode = isTestMode(args.testMode);
+    const { testMode, isSimulated } = resolveProviderMode(args.testMode);
     if (
       !Number.isSafeInteger(args.totalCount) ||
       args.totalCount < 1 ||
@@ -123,7 +124,7 @@ export const create = action({
       shouldReconcile = claim === "reconcile";
     }
     let raw: unknown;
-    if (testMode) {
+    if (isSimulated) {
       raw = {
         id: await deterministicTestId("sub", [
           args.idempotencyKey ?? crypto.randomUUID(),
@@ -151,6 +152,7 @@ export const create = action({
           ...(args.userId === undefined ? {} : { userId: args.userId }),
           ...(args.externalId === undefined ? {} : { externalId: args.externalId }),
           ...(args.metadata === undefined ? {} : { metadata: args.metadata }),
+          testMode,
         });
       }
       try {
@@ -203,7 +205,8 @@ export const fetch = action({
     ctx,
     { razorpaySubscriptionId, testMode },
   ): Promise<Omit<Doc<"subscriptions">, "_id" | "_creationTime">> => {
-    if (isTestMode(testMode)) {
+    const mode = resolveProviderMode(testMode);
+    if (mode.isSimulated) {
       const local = await ctx.runQuery(internal.lookup.subscription, {
         id: razorpaySubscriptionId,
       });
@@ -219,7 +222,7 @@ export const fetch = action({
     );
     if (parseProviderResponse(() => record(raw)).id !== razorpaySubscriptionId)
       throw razorpayError("RAZORPAY_INVALID_RESPONSE");
-    return { ...subscriptionFields(raw, Date.now()), testMode: false };
+    return { ...subscriptionFields(raw, Date.now()), testMode: mode.testMode };
   },
 });
 
@@ -232,8 +235,8 @@ async function change(
 ): Promise<Doc<"subscriptions">> {
   let raw: unknown;
   let observedAt = Date.now();
-  const testMode = isTestMode(requestedTestMode);
-  if (testMode) {
+  const { testMode, isSimulated } = resolveProviderMode(requestedTestMode);
+  if (isSimulated) {
     const existing = await ctx.runQuery(internal.lookup.subscription, {
       id: razorpaySubscriptionId,
     });
@@ -403,7 +406,7 @@ export const get = query({
         ctx.db
           .query("subscriptions")
           .withIndex("by_userId_and_testMode_and_status", (q) =>
-            q.eq("userId", userId).eq("testMode", resolveMode(testMode)).eq("status", status),
+            q.eq("userId", userId).eq("testMode", readTestMode(testMode)).eq("status", status),
           )
           .order("desc")
           .first(),
@@ -417,7 +420,7 @@ export const get = query({
           ctx.db
             .query("subscriptions")
             .withIndex("by_userId_and_testMode_and_status", (q) =>
-              q.eq("userId", userId).eq("testMode", resolveMode(testMode)).eq("status", status),
+              q.eq("userId", userId).eq("testMode", readTestMode(testMode)).eq("status", status),
             )
             .order("desc")
             .first(),
@@ -432,7 +435,7 @@ export const get = query({
     return ctx.db
       .query("subscriptions")
       .withIndex("by_userId_and_testMode_and_createdAt", (q) =>
-        q.eq("userId", userId).eq("testMode", resolveMode(testMode)),
+        q.eq("userId", userId).eq("testMode", readTestMode(testMode)),
       )
       .order("desc")
       .first();
@@ -444,21 +447,15 @@ export const list = query({
     paginationOpts: paginationOptsValidator,
     testMode: v.optional(v.boolean()),
   },
-  returns: v.object({
-    page: v.array(schema.doc("subscriptions")),
-    isDone: v.boolean(),
-    continueCursor: v.string(),
-  }),
+  returns: paginationResultValidator(schema.doc("subscriptions")),
   handler: (ctx, { userId, paginationOpts, testMode }) =>
-    boundedPage(
-      paginator(ctx.db, schema)
-        .query("subscriptions")
-        .withIndex("by_userId_and_testMode_and_createdAt", (q) =>
-          q.eq("userId", userId).eq("testMode", resolveMode(testMode)),
-        )
-        .order("desc"),
-      paginationOpts,
-    ),
+    paginator(ctx.db, schema)
+      .query("subscriptions")
+      .withIndex("by_userId_and_testMode_and_createdAt", (q) =>
+        q.eq("userId", userId).eq("testMode", readTestMode(testMode)),
+      )
+      .order("desc")
+      .paginate(boundedPage(paginationOpts)),
 });
 
 export const verifyCheckout = action({
@@ -481,7 +478,7 @@ export const verifyCheckout = action({
         args.signature,
       ))
     ) {
-      throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
+      throw razorpayError("RAZORPAY_INVALID_PAYMENT_SIGNATURE");
     }
     const mirrored = await ctx.runQuery(internal.lookup.subscription, {
       id: args.razorpaySubscriptionId,
@@ -490,12 +487,12 @@ export const verifyCheckout = action({
     if (mirrored.createdThroughComponent !== true) {
       throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     }
-    const testMode = isTestMode(args.testMode);
+    const { testMode, isSimulated } = resolveProviderMode(args.testMode);
     assertModeMatches(mirrored, testMode);
     if (args.userId !== undefined && mirrored.userId !== args.userId) {
       throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
     }
-    if (testMode) {
+    if (isSimulated) {
       const localPayment = await ctx.runQuery(internal.lookup.payment, {
         id: args.razorpayPaymentId,
       });
@@ -512,7 +509,7 @@ export const verifyCheckout = action({
       await ctx.runMutation(internal.mutations.putSubscription, {
         raw: subscription,
         observedAt: Date.now(),
-        testMode: false,
+        testMode,
       });
       const payment = await requestProvider(
         "GET",
@@ -524,7 +521,7 @@ export const verifyCheckout = action({
       await ctx.runMutation(internal.mutations.putPayment, {
         raw: payment,
         observedAt: Date.now(),
-        testMode: false,
+        testMode,
       });
     }
     return ctx.runMutation(internal.mutations.markVerified, {

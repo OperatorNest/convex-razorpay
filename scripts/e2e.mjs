@@ -593,10 +593,7 @@ async function main() {
     );
     applyE2eEnv(config);
     const env = cli("e2e:environment");
-    pass(
-      "component is in provider API mode",
-      env.testMode === false && env.keyIdConfigured && env.testKey,
-    );
+    pass("component calls the Razorpay test API", env.keyIdConfigured && env.testKey);
 
     const token = randomBytes(24).toString("hex");
     recordServer = recorder(config.entries.get("RAZORPAY_WEBHOOK_SECRET"), token, deliveries);
@@ -765,7 +762,7 @@ async function main() {
         return mirror?.status === "processed" &&
           mirror.razorpayPaymentId === reply.razorpay_payment_id &&
           mirror.amount === refund.amount &&
-          mirror.testMode === false
+          mirror.testMode === true
           ? mirror
           : null;
       },

@@ -1,8 +1,8 @@
 import schema from "./schema.js";
 import { afterEach, beforeEach, expect, test, describe, vi } from "vitest";
 import { convexTest } from "convex-test";
-import { api } from "./_generated/api.js";
-import { restoreRazorpayTestState, stubRazorpayEnv } from "../test-helpers.js";
+import { api, internal } from "./_generated/api.js";
+import { restoreRazorpayTestState, stubRazorpayEnv, expectRazorpayError } from "../test-helpers.js";
 import { computeHmacSha256Hex } from "../shared/crypto.js";
 
 describe("subscriptions", () => {
@@ -28,6 +28,7 @@ describe("subscriptions", () => {
   afterEach(restoreRazorpayTestState);
 
   test("stored subscription pages continue without overlap and bound endCursor reads", async () => {
+    stubRazorpayEnv({ keySecret: "fixture_secret", webhookSecret: "fixture_webhook" });
     const t = harness();
     const subscriptions = [];
     for (let index = 0; index < 5; index++) {
@@ -70,6 +71,7 @@ describe("subscriptions", () => {
   });
 
   test("unkeyed simulated creates allocate independent resources", async () => {
+    stubRazorpayEnv({ keySecret: "fixture_secret", webhookSecret: "fixture_webhook" });
     const t = harness();
     const a = await t.action(api.subscriptions.create, {
       quantity: 1,
@@ -135,7 +137,7 @@ describe("subscriptions", () => {
     async (startAt) => {
       const fetch = vi.fn();
       vi.stubGlobal("fetch", fetch);
-      await expect(
+      await expectRazorpayError(
         harness().action(api.subscriptions.create, {
           razorpayPlanId: "plan_fixture",
           totalCount: 12,
@@ -143,7 +145,8 @@ describe("subscriptions", () => {
           customerNotify: false,
           startAt,
         }),
-      ).rejects.toMatchObject({ data: { code: "RAZORPAY_INVALID_ARGUMENT" } });
+        "RAZORPAY_INVALID_ARGUMENT",
+      );
       expect(fetch).not.toHaveBeenCalled();
     },
   );
@@ -255,5 +258,43 @@ describe("subscriptions", () => {
     expect(
       await t.action(api.subscriptions.fetch, { razorpaySubscriptionId: subscription.id }),
     ).toMatchObject({ status: "active", quantity: 4 });
+  });
+
+  test("a provider subscription response cannot revive a terminal status or lower paidCount", async () => {
+    stubRazorpayEnv({ keyId: "rzp_live_fixture", keySecret: "fixture_secret" });
+    const stored = {
+      entity: "subscription",
+      id: "sub_terminal_fixture",
+      plan_id: "plan_fixture",
+      status: "active",
+      quantity: 1,
+      total_count: 12,
+      paid_count: 3,
+      remaining_count: 9,
+      created_at: 1_567_674_500,
+    };
+    const t = harness();
+    await t.mutation(internal.mutations.putSubscription, {
+      raw: stored,
+      observedAt: 1_567_674_500_000,
+      testMode: false,
+    });
+    const respond = (raw: Record<string, unknown>) =>
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => Response.json({ ...stored, ...raw })),
+      );
+    respond({ status: "active", paid_count: 2, remaining_count: 10 });
+    expect(
+      await t.action(api.subscriptions.pause, { razorpaySubscriptionId: stored.id }),
+    ).toMatchObject({ status: "active", paidCount: 3, remainingCount: 9 });
+    respond({ status: "cancelled" });
+    expect(
+      await t.action(api.subscriptions.cancel, { razorpaySubscriptionId: stored.id }),
+    ).toMatchObject({ status: "cancelled", paidCount: 3 });
+    respond({ status: "active", paid_count: 4, remaining_count: 8 });
+    expect(
+      await t.action(api.subscriptions.resume, { razorpaySubscriptionId: stored.id }),
+    ).toMatchObject({ status: "cancelled", paidCount: 3, testMode: false });
   });
 });

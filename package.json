@@ -30,9 +30,8 @@
     "dist",
     "src",
     "!src/**/*.test.ts",
-    "!src/**/fixtures/**",
     "!src/test-helpers.ts",
-    "!src/**/test-helpers.ts"
+    "!src/**/fixtures/**"
   ],
   "type": "module",
   "sideEffects": false,
@@ -67,14 +66,14 @@
     "build:codegen": "node scripts/with-local-lock.mjs pnpm run build:codegen:locked",
     "build:codegen:locked": "convex codegen --component-dir ./src/component && pnpm build && convex codegen",
     "build": "node node_modules/@typescript/native/bin/tsc -p tsconfig.build.json",
-    "build:clean": "rm -rf dist *.tsbuildinfo && pnpm build:codegen",
+    "build:clean": "rm -rf dist && pnpm build:codegen",
     "typecheck": "node node_modules/@typescript/native/bin/tsc --noEmit && node node_modules/@typescript/native/bin/tsc -p tsconfig.test.json && node node_modules/@typescript/native/bin/tsc -p example/convex/tsconfig.json",
     "lint": "oxlint --type-aware --deny-warnings --report-unused-disable-directives .",
     "fmt": "oxfmt .",
     "fmt:check": "oxfmt --check .",
     "test": "vitest run --coverage",
     "test:watch": "vitest",
-    "smoke": "node scripts/smoke.mjs",
+    "smoke": "node scripts/with-local-lock.mjs node scripts/smoke.mjs",
     "check": "pnpm fmt:check && pnpm build && pnpm lint && pnpm typecheck && pnpm knip && node scripts/check-source.mjs && pnpm test",
     "changeset": "changeset",
     "e2e:env": "node scripts/with-local-lock.mjs node scripts/e2e-env.mjs",
@@ -89,7 +88,7 @@
     "@vitest/coverage-v8": "5.0.3",
     "convex": "1.46.0",
     "convex-helpers": "0.1.128",
-    "convex-test": "0.0.60",
+    "convex-test": "0.0.61",
     "knip": "6.40.0",
     "oxfmt": "0.72.0",
     "oxlint": "1.87.0",
@@ -100,7 +99,7 @@
   },
   "peerDependencies": {
     "convex": "^1.46.0",
-    "convex-helpers": "^0.1.106"
+    "convex-helpers": "^0.1.128"
   },
   "engines": {
     "node": ">=24"

@@ -55,7 +55,7 @@ export const webhookStatusValidator = v.union(
   v.literal("failed"),
   v.literal("duplicate"),
 );
-/** Names the webhook states returned by Razorpay. */
+/** Names the component's webhook processing states. */
 export type WebhookStatus = Infer<typeof webhookStatusValidator>;
 
 export const idempotencyStatusValidator = v.union(
@@ -63,7 +63,7 @@ export const idempotencyStatusValidator = v.union(
   v.literal("completed"),
   v.literal("failed"),
 );
-/** Names the idempotency states returned by Razorpay. */
+/** Names the component's idempotency claim states. */
 export type IdempotencyStatus = Infer<typeof idempotencyStatusValidator>;
 
 export const paymentLinkStatusValidator = v.union(

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, test, vi, describe } from "vitest";
 import { convexTest } from "convex-test";
 import { api } from "./_generated/api.js";
 import { computeHmacSha256Hex } from "../shared/crypto.js";
-import { restoreRazorpayTestState, stubRazorpayEnv } from "../test-helpers.js";
+import { restoreRazorpayTestState, stubRazorpayEnv, expectRazorpayError } from "../test-helpers.js";
 
 describe("webhooks", () => {
   const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
@@ -39,6 +39,34 @@ describe("webhooks", () => {
 
   afterEach(restoreRazorpayTestState);
 
+  test("a signed event older than the retention window minus one day is a failed receipt that a retry deduplicates", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_567_674_600_000 + 29 * 86_400_000);
+    const t = harness();
+    const ingestSigned = async (createdAtSeconds: number, eventId: string) => {
+      const body = JSON.stringify({
+        entity: "event",
+        event: "payment.authorized",
+        created_at: createdAtSeconds,
+        payload: { payment: { entity: payment } },
+      });
+      return t.action(api.webhooks.ingest, {
+        body,
+        signature: await computeHmacSha256Hex("fixture_webhook", body),
+        eventId,
+      });
+    };
+    expect(await ingestSigned(1_567_674_599, "evt_stale")).toEqual({
+      status: "failed",
+      errorCode: "RAZORPAY_STALE_WEBHOOK",
+    });
+    expect(await ingestSigned(1_567_674_599, "evt_stale")).toEqual({ status: "duplicate" });
+    expect(await t.run((ctx) => ctx.db.query("payments").take(1))).toEqual([]);
+    expect(await ingestSigned(1_567_674_600, "evt_retention_boundary")).toMatchObject({
+      status: "processed",
+    });
+  });
+
   test("signed webhooks reject test mode with a recognizable live key", async () => {
     vi.stubEnv("RAZORPAY_TEST_MODE", "true");
     vi.stubEnv("RAZORPAY_KEY_ID", "rzp_live_fixture");
@@ -49,13 +77,14 @@ describe("webhooks", () => {
       created_at: 1,
       payload: { payment: { entity: payment } },
     });
-    await expect(
+    await expectRazorpayError(
       t.action(api.webhooks.ingest, {
         body,
         signature: await computeHmacSha256Hex("fixture_webhook", body),
         eventId: "evt_live_mode",
       }),
-    ).rejects.toMatchObject({ data: { code: "RAZORPAY_LIVE_KEY_TEST_MODE" } });
+      "RAZORPAY_LIVE_KEY_TEST_MODE",
+    );
   });
 
   test.each(["not_an_invoice", "inv_other"])(

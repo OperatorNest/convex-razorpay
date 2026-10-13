@@ -21,9 +21,8 @@ export function validateCurrency(currency: string): void {
   if (!/^[A-Z]{3}$/.test(currency)) throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
 }
 
-export function validateAmount(amount: number, minimum = 1): void {
-  if (!Number.isSafeInteger(amount) || amount < minimum)
-    throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
+export function validateAmount(amount: number): void {
+  if (!Number.isSafeInteger(amount) || amount < 1) throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
 }
 
 export function validatePage(count?: number, skip?: number): { count: number; skip: number } {
@@ -60,7 +59,7 @@ export function optionalLinkage(link: {
   metadata?: Record<string, string> | undefined;
   idempotencyKey?: string | undefined;
   requestFingerprint?: string | undefined;
-  testMode?: boolean | undefined;
+  testMode: boolean;
   createdThroughComponent?: boolean | undefined;
 }) {
   return {
@@ -71,7 +70,7 @@ export function optionalLinkage(link: {
     ...(link.requestFingerprint === undefined
       ? {}
       : { requestFingerprint: link.requestFingerprint }),
-    ...(link.testMode === undefined ? {} : { testMode: link.testMode }),
+    testMode: link.testMode,
     ...(link.createdThroughComponent === undefined
       ? {}
       : { createdThroughComponent: link.createdThroughComponent }),

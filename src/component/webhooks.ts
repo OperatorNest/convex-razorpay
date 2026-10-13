@@ -1,24 +1,25 @@
-import { readConfig, requireConfigValue } from "./config.js";
+import { readConfig, requireConfigValue } from "../shared/config.js";
 import { razorpayError, isRazorpayError } from "../shared/errors.js";
 
 import { maxWebhookBodyBytes, webhookRetentionDays } from "../shared/constants.js";
 import { computeSha256Hex } from "../shared/crypto.js";
 import { v } from "convex/values";
 import type { Infer } from "convex/values";
-import { action, internalMutation, mutation } from "./_generated/server.js";
-import type { MutationCtx } from "./_generated/server.js";
+import { action, internalMutation } from "./_generated/server.js";
 import type { FunctionHandle } from "convex/server";
 import { internal } from "./_generated/api.js";
 import { env } from "./_generated/server.js";
 import { compareHexSignatures, computeHmacSha256Hex } from "../shared/crypto.js";
 import { integerField, record, stringField } from "../shared/validation.js";
-import { resolveMode } from "./provider.js";
+import { readTestMode } from "./provider.js";
 import { orderFields, paymentFields, refundFields, subscriptionFields } from "./mapping.js";
 import { applyOrder, applyPayment, applyRefund, applySubscription } from "./write.js";
 
 import { webhookIngestResultValidator } from "../shared/validators.js";
 
 type IngestResult = Infer<typeof webhookIngestResultValidator>;
+
+const dayMs = 86_400_000;
 
 type Parsed = {
   event: string;
@@ -205,7 +206,7 @@ export const ingest = action({
         : { razorpayInvoiceId: parsed.razorpayInvoiceId }),
       providerCreatedAt: parsed?.providerCreatedAt ?? fallbackNow,
 
-      testMode: resolveMode(),
+      testMode: readTestMode(),
       bodyHash,
       ...(errorCode === undefined ? {} : { errorCode }),
       ...(args.callbackHandle === undefined ? {} : { callbackHandle: args.callbackHandle }),
@@ -286,12 +287,16 @@ export const apply = internalMutation({
     if (byEventId || byBodyHash) return { status: "duplicate" };
     const receivedAt = Date.now();
     const razorpayEntityId = typeof args.rawEntity?.id === "string" ? args.rawEntity.id : undefined;
-    let status: "processed" | "ignored" | "failed" = args.errorCode
+    let errorCode =
+      args.errorCode ??
+      (args.providerCreatedAt < receivedAt - (webhookRetentionDays - 1) * dayMs
+        ? "RAZORPAY_STALE_WEBHOOK"
+        : undefined);
+    let status: "processed" | "ignored" | "failed" = errorCode
       ? "failed"
       : args.rawEntity
         ? "processed"
         : "ignored";
-    let errorCode = args.errorCode;
     if (status === "processed") {
       try {
         await ctx.runMutation(internal.webhooks.applyEntities, {
@@ -359,45 +364,21 @@ export const apply = internalMutation({
   },
 });
 
-async function deleteBatch(ctx: MutationCtx, before: number, batchSize: number): Promise<number> {
-  if (
-    !Number.isSafeInteger(before) ||
-    before < 0 ||
-    !Number.isSafeInteger(batchSize) ||
-    batchSize < 1 ||
-    batchSize > 20
-  )
-    throw razorpayError("RAZORPAY_INVALID_ARGUMENT");
-  const rows = await ctx.db
-    .query("webhookEvents")
-    .withIndex("by_receivedAt", (q) => q.lt("receivedAt", before))
-    .take(batchSize);
-  for (const row of rows) await ctx.db.delete("webhookEvents", row._id);
-  return rows.length;
-}
-
-export const cleanup = mutation({
-  args: { before: v.optional(v.number()), batchSize: v.optional(v.number()) },
-  returns: v.number(),
-  handler: (ctx, { before, batchSize }) =>
-    deleteBatch(
-      ctx,
-      Math.min(
-        before ?? Date.now() - webhookRetentionDays * 24 * 60 * 60_000,
-        Date.now() - 24 * 60 * 60 * 1000,
-      ),
-      batchSize ?? 20,
-    ),
-});
+const cleanupBatchSize = 20;
 
 export const cleanupScheduled = internalMutation({
   args: { before: v.optional(v.number()) },
   returns: v.number(),
   handler: async (ctx, { before }): Promise<number> => {
-    const cutoff = before ?? Date.now() - webhookRetentionDays * 24 * 60 * 60_000;
-    const count = await deleteBatch(ctx, cutoff, 20);
-    if (count === 20)
+    const retentionCutoff = Date.now() - webhookRetentionDays * dayMs;
+    const cutoff = Math.min(before ?? retentionCutoff, retentionCutoff);
+    const rows = await ctx.db
+      .query("webhookEvents")
+      .withIndex("by_receivedAt", (q) => q.lt("receivedAt", cutoff))
+      .take(cleanupBatchSize);
+    for (const row of rows) await ctx.db.delete("webhookEvents", row._id);
+    if (rows.length === cleanupBatchSize)
       await ctx.scheduler.runAfter(0, internal.webhooks.cleanupScheduled, { before: cutoff });
-    return count;
+    return rows.length;
   },
 });

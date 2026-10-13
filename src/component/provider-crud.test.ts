@@ -2,11 +2,12 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import schema from "./schema.js";
+import { expectRazorpayError } from "../test-helpers.js";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 
 beforeEach(() => {
-  vi.stubEnv("RAZORPAY_KEY_ID", "rzp_test_fixture");
+  vi.stubEnv("RAZORPAY_KEY_ID", "rzp_live_fixture");
   vi.stubEnv("RAZORPAY_KEY_SECRET", "fabricated_secret");
   vi.stubEnv("RAZORPAY_TEST_MODE", undefined);
 });
@@ -158,7 +159,11 @@ test("live payment capture and refund mirror provider state without accepting an
   });
   vi.stubGlobal("fetch", fetch);
   const t = convexTest(schema, modules);
-  await t.mutation(internal.mutations.putPayment, { raw: initialPayment, observedAt: Date.now() });
+  await t.mutation(internal.mutations.putPayment, {
+    testMode: false,
+    raw: initialPayment,
+    observedAt: Date.now(),
+  });
 
   const captured = await t.action(api.payments.capture, {
     razorpayPaymentId: "pay_live_fixture",
@@ -297,49 +302,58 @@ test("live duplicate-receipt order is reconciled and its provider payments are m
 });
 
 test("explicit test mode refuses missing mirrors without calling the provider", async () => {
+  vi.stubEnv("RAZORPAY_KEY_ID", undefined);
   const fetch = vi.fn(async () => {
     throw new Error("Provider must not be called");
   });
   vi.stubGlobal("fetch", fetch);
   const t = convexTest(schema, modules);
 
-  await expect(
+  await expectRazorpayError(
     t.action(api.orders.fetch, { razorpayOrderId: "order_missing", testMode: true }),
-  ).rejects.toMatchObject({ data: { code: "RAZORPAY_NOT_FOUND" } });
-  await expect(
+    "RAZORPAY_NOT_FOUND",
+  );
+  await expectRazorpayError(
     t.action(api.payments.fetch, { razorpayPaymentId: "pay_missing", testMode: true }),
-  ).rejects.toMatchObject({ data: { code: "RAZORPAY_NOT_FOUND" } });
-  await expect(
+    "RAZORPAY_NOT_FOUND",
+  );
+  await expectRazorpayError(
     t.action(api.refunds.fetch, { razorpayRefundId: "rfnd_missing", testMode: true }),
-  ).rejects.toMatchObject({ data: { code: "RAZORPAY_NOT_FOUND" } });
-  await expect(
+    "RAZORPAY_NOT_FOUND",
+  );
+  await expectRazorpayError(
     t.action(api.customers.fetch, { razorpayCustomerId: "cust_missing", testMode: true }),
-  ).rejects.toMatchObject({ data: { code: "RAZORPAY_NOT_FOUND" } });
-  await expect(
+    "RAZORPAY_NOT_FOUND",
+  );
+  await expectRazorpayError(
     t.action(api.plans.fetch, { razorpayPlanId: "plan_missing", testMode: true }),
-  ).rejects.toMatchObject({ data: { code: "RAZORPAY_NOT_FOUND" } });
-  await expect(
+    "RAZORPAY_NOT_FOUND",
+  );
+  await expectRazorpayError(
     t.action(api.subscriptions.fetch, { razorpaySubscriptionId: "sub_missing", testMode: true }),
-  ).rejects.toMatchObject({ data: { code: "RAZORPAY_NOT_FOUND" } });
+    "RAZORPAY_NOT_FOUND",
+  );
   expect(fetch).not.toHaveBeenCalled();
 });
 
 test("invalid public create and capture arguments fail with structured errors before HTTP", async () => {
+  vi.stubEnv("RAZORPAY_KEY_ID", undefined);
   const fetch = vi.fn(async () => {
     throw new Error("Provider must not be called");
   });
   vi.stubGlobal("fetch", fetch);
   const t = convexTest(schema, modules);
 
-  await expect(
+  await expectRazorpayError(
     t.action(api.orders.create, {
       partialPayment: false,
-      amount: 1,
+      amount: 0,
       currency: "INR",
       testMode: true,
     }),
-  ).rejects.toMatchObject({ data: { code: "RAZORPAY_INVALID_ARGUMENT" } });
-  await expect(
+    "RAZORPAY_INVALID_ARGUMENT",
+  );
+  await expectRazorpayError(
     t.action(api.orders.create, {
       partialPayment: false,
       amount: 5000,
@@ -347,29 +361,33 @@ test("invalid public create and capture arguments fail with structured errors be
       receipt: "x".repeat(41),
       testMode: true,
     }),
-  ).rejects.toMatchObject({ data: { code: "RAZORPAY_INVALID_ARGUMENT" } });
-  await expect(
+    "RAZORPAY_INVALID_ARGUMENT",
+  );
+  await expectRazorpayError(
     t.action(api.customers.create, {
       name: "Alice Example",
       email: "not-an-email",
       testMode: true,
     }),
-  ).rejects.toMatchObject({ data: { code: "RAZORPAY_INVALID_ARGUMENT" } });
-  await expect(
+    "RAZORPAY_INVALID_ARGUMENT",
+  );
+  await expectRazorpayError(
     t.action(api.refunds.create, {
       speed: "normal",
       razorpayPaymentId: "pay_missing",
       amount: 100,
       testMode: true,
     }),
-  ).rejects.toMatchObject({ data: { code: "RAZORPAY_IDEMPOTENCY_REQUIRED" } });
-  await expect(
+    "RAZORPAY_IDEMPOTENCY_REQUIRED",
+  );
+  await expectRazorpayError(
     t.action(api.payments.capture, {
       razorpayPaymentId: "pay_missing",
       amount: 0,
       currency: "INR",
       testMode: true,
     }),
-  ).rejects.toMatchObject({ data: { code: "RAZORPAY_INVALID_ARGUMENT" } });
+    "RAZORPAY_INVALID_ARGUMENT",
+  );
   expect(fetch).not.toHaveBeenCalled();
 });

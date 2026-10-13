@@ -57,7 +57,7 @@ function refundLinkFields(link: Linkage) {
 
 async function completeClaim(
   ctx: MutationCtx,
-  resource: "order" | "plan" | "subscription",
+  resource: Doc<"idempotencyRequests">["resource"],
   link: ModeLinkage,
   razorpayEntityId: string,
 ): Promise<void> {
@@ -130,7 +130,8 @@ export async function applyOrder(
         q.eq("testMode", true).eq("receipt", next.receipt),
       )
       .first();
-    if (duplicate) throw razorpayError("RAZORPAY_PROVIDER_ERROR", { providerStatus: 400 });
+    if (duplicate)
+      throw razorpayError("RAZORPAY_PROVIDER_ERROR", { providerStatus: 400, retryable: false });
   }
   const id = await ctx.db.insert("orders", {
     ...next,
@@ -329,6 +330,7 @@ export async function applyCustomer(
         ? {}
         : { requestFingerprint: current.requestFingerprint ?? link.requestFingerprint }),
     });
+    await completeClaim(ctx, "customer", link, next.razorpayCustomerId);
     return getOrThrow(await ctx.db.get("customers", current["_id"]));
   }
   const id = await ctx.db.insert("customers", {
@@ -339,6 +341,7 @@ export async function applyCustomer(
       : { requestFingerprint: link.requestFingerprint }),
     testMode: link.testMode,
   });
+  await completeClaim(ctx, "customer", link, next.razorpayCustomerId);
   return getOrThrow(await ctx.db.get("customers", id));
 }
 
@@ -397,31 +400,22 @@ export async function applySubscription(
       webhookTime !== undefined &&
       (current.lastWebhookAt === undefined || webhookTime >= current.lastWebhookAt);
     const advances =
-      webhookTime === undefined ||
-      (isCurrentWebhook &&
-        statusAdvances(
-          "subscription",
-          current.status,
-          next.status,
-          [current.paidCount],
-          [next.paidCount],
-        ));
+      (webhookTime === undefined || isCurrentWebhook) &&
+      statusAdvances(
+        "subscription",
+        current.status,
+        next.status,
+        [current.paidCount],
+        [next.paidCount],
+      );
+    const paidCount = Math.max(current.paidCount, next.paidCount);
     await ctx.db.patch("subscriptions", current["_id"], {
       ...(isCurrentWebhook ? { lastWebhookAt: webhookTime } : {}),
       ...(advances
         ? {
             ...next,
-            paidCount:
-              webhookTime === undefined
-                ? next.paidCount
-                : Math.max(current.paidCount, next.paidCount),
-            remainingCount:
-              webhookTime === undefined
-                ? next.remainingCount
-                : Math.min(
-                    next.remainingCount,
-                    Math.max(0, next.totalCount - Math.max(current.paidCount, next.paidCount)),
-                  ),
+            paidCount,
+            remainingCount: Math.min(next.remainingCount, Math.max(0, next.totalCount - paidCount)),
           }
         : next.rawStatus === undefined
           ? {}

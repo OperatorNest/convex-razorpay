@@ -1,4 +1,10 @@
-import { stubRazorpayEnv, restoreRazorpayTestState } from "../test-helpers.js";
+import {
+  drain,
+  expectRazorpayError,
+  restoreRazorpayTestState,
+  setupTest,
+  stubRazorpayEnv,
+} from "../test-helpers.js";
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
@@ -19,6 +25,11 @@ beforeEach(() => {
     }),
   );
 });
+
+function pinClock(nowMs: number): void {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(nowMs);
+}
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -87,6 +98,7 @@ test("list returns newest indexed payments first", async () => {
     ["pay_newest", 1_567_674_600],
   ] as const) {
     await t.mutation(internal.mutations.putPayment, {
+      testMode: false,
       raw: {
         id,
         entity: "payment",
@@ -158,6 +170,7 @@ async function ingest(t: ReturnType<typeof convexTest>, eventId: string, body: s
 }
 
 test("webhook dedupes and an older authorized payment cannot undo capture", async () => {
+  pinClock(1_567_674_660_000);
   vi.stubEnv("RAZORPAY_WEBHOOK_SECRET", webhookFixture);
   const t = convexTest(schema, modules);
   const captured = envelope(
@@ -188,6 +201,7 @@ test("webhook dedupes and an older authorized payment cannot undo capture", asyn
 });
 
 test("a webhook with an older provider timestamp advances a fetched payment", async () => {
+  pinClock(1_567_674_660_000);
   vi.stubEnv("RAZORPAY_KEY_ID", "rzp_test_fixture");
   vi.stubEnv("RAZORPAY_KEY_SECRET", "secret_fixture");
   vi.stubEnv("RAZORPAY_WEBHOOK_SECRET", webhookFixture);
@@ -213,6 +227,7 @@ test("a webhook with an older provider timestamp advances a fetched payment", as
 });
 
 test("subscription authenticated advances to active within the same second", async () => {
+  pinClock(20_000);
   vi.stubEnv("RAZORPAY_WEBHOOK_SECRET", webhookFixture);
   const t = convexTest(schema, modules);
   const authenticated = envelope(
@@ -236,6 +251,7 @@ test("subscription authenticated advances to active within the same second", asy
 });
 
 test("unknown payment statuses are preserved without changing known entity state", async () => {
+  pinClock(20_000);
   vi.stubEnv("RAZORPAY_WEBHOOK_SECRET", webhookFixture);
   const t = convexTest(schema, modules);
   expect(
@@ -262,10 +278,15 @@ test("unknown payment statuses are preserved without changing known entity state
 });
 
 test("a secondary apply failure rolls back the primary paid-order write", async () => {
+  pinClock(20_000);
   vi.stubEnv("RAZORPAY_WEBHOOK_SECRET", webhookFixture);
   const t = convexTest(schema, modules);
   const existing = payment("pay_secondary_conflict", "authorized", 5000);
-  await t.mutation(internal.mutations.putPayment, { raw: existing, observedAt: 10_000 });
+  await t.mutation(internal.mutations.putPayment, {
+    testMode: false,
+    raw: existing,
+    observedAt: 10_000,
+  });
   const body = JSON.stringify({
     entity: "event",
     event: "order.paid",
@@ -306,6 +327,7 @@ test("a secondary apply failure rolls back the primary paid-order write", async 
 });
 
 test("signed event with a different valid status is accepted", async () => {
+  pinClock(1_567_674_660_000);
   vi.stubEnv("RAZORPAY_WEBHOOK_SECRET", webhookFixture);
   const t = convexTest(schema, modules);
   const body = envelope(
@@ -340,6 +362,7 @@ test("signed malformed webhook is recorded as failed without raw body", async ()
 });
 
 test("subscription webhooks recover from halted but cannot revive a terminal state", async () => {
+  pinClock(20_000);
   vi.stubEnv("RAZORPAY_WEBHOOK_SECRET", webhookFixture);
   const t = convexTest(schema, modules);
   for (const [status, expected, timestamp] of [
@@ -387,7 +410,7 @@ test("test refunds update captured balance once and reject over-refund", async (
     idempotencyKey: "second_refund_key",
     testMode: true,
   });
-  await expect(
+  await expectRazorpayError(
     t.action(api.refunds.create, {
       speed: "normal",
       razorpayPaymentId: "pay_refundable",
@@ -395,7 +418,8 @@ test("test refunds update captured balance once and reject over-refund", async (
       idempotencyKey: "third_refund_key",
       testMode: true,
     }),
-  ).rejects.toThrow("An argument is invalid, missing or out of bounds.");
+    "RAZORPAY_INVALID_ARGUMENT",
+  );
   const mirror = await t
     .query(api.payments.list, {
       paginationOpts: { numItems: 100, cursor: null },
@@ -427,6 +451,7 @@ test("checkout signature verifies identity and records authorization without cap
     ),
   );
   await t.mutation(internal.mutations.putOrder, {
+    testMode: true,
     raw: {
       entity: "order",
       id: "order_IluGWxBm9U8zJ8",
@@ -447,14 +472,15 @@ test("checkout signature verifies identity and records authorization without cap
     razorpayPaymentId: "pay_IH4NVgf4wjLNgR",
     signature: "efeceae0e93bd41a7096ecce1d1cf69979db6c1d91a8116a21965faa42177a62",
   };
-  await expect(
+  await expectRazorpayError(
     t.action(api.orders.verifyCheckout, { ...signed, signature: "0".repeat(64) }),
-  ).rejects.toThrow("An argument is invalid, missing or out of bounds.");
+    "RAZORPAY_INVALID_PAYMENT_SIGNATURE",
+  );
   const result = await t.action(api.orders.verifyCheckout, signed);
   expect(result).toMatchObject({ verified: true, status: "authorized", captured: false });
 });
 
-test("cleanup only removes old webhook events in the requested batch", async () => {
+test("scheduled cleanup removes only webhook events older than the retention window", async () => {
   const t = convexTest(schema, modules);
   const now = Date.now();
   await t.run(async (ctx) => {
@@ -479,18 +505,33 @@ test("cleanup only removes old webhook events in the requested batch", async () 
       bodyHash: "hash",
     });
   });
-  expect(
-    await t.mutation(api.webhooks.cleanup, { before: now - 30 * 86400_000, batchSize: 2 }),
-  ).toBe(2);
-  expect(
-    await t.mutation(api.webhooks.cleanup, { before: now - 30 * 86400_000, batchSize: 2 }),
-  ).toBe(1);
+  expect(await t.mutation(internal.webhooks.cleanupScheduled, {})).toBe(3);
   expect(
     (await t.run((ctx) => ctx.db.query("webhookEvents").take(10))).map((row) => row.eventId),
   ).toEqual(["evt_new"]);
 });
 
-test("public cleanup cannot delete events from the last 24 hours", async () => {
+test("scheduled cleanup schedules further batches until every expired event is removed", async () => {
+  vi.useFakeTimers();
+  const t = setupTest();
+  const expiredAt = Date.now() - 40 * 86400_000;
+  await t.run(async (ctx) => {
+    for (let index = 0; index < 45; index++)
+      await ctx.db.insert("webhookEvents", {
+        eventId: `evt_expired_${index}`,
+        event: "payment.captured",
+        providerCreatedAt: expiredAt,
+        receivedAt: expiredAt,
+        status: "processed",
+        bodyHash: "hash",
+      });
+  });
+  expect(await t.mutation(internal.webhooks.cleanupScheduled, {})).toBe(20);
+  await drain(t);
+  expect(await t.run((ctx) => ctx.db.query("webhookEvents").take(10))).toEqual([]);
+});
+
+test("scheduled cleanup clamps a later cutoff to the retention window", async () => {
   const t = convexTest(schema, modules);
   const now = Date.now();
   const eventId = await t.run((ctx) =>
@@ -498,12 +539,12 @@ test("public cleanup cannot delete events from the last 24 hours", async () => {
       eventId: "evt_recent_cleanup_guard",
       event: "payment.captured",
       providerCreatedAt: now,
-      receivedAt: now - 23 * 60 * 60 * 1000,
+      receivedAt: now - 29 * 86400_000,
       status: "processed",
       bodyHash: "cleanup-guard",
     }),
   );
-  expect(await t.mutation(api.webhooks.cleanup, { before: now + 60_000, batchSize: 20 })).toBe(0);
+  expect(await t.mutation(internal.webhooks.cleanupScheduled, { before: now + 60_000 })).toBe(0);
   expect(await t.run((ctx) => ctx.db.get("webhookEvents", eventId))).not.toBeNull();
 });
 
@@ -659,6 +700,7 @@ test("subscription checkout signature links a provider payment without subscript
     ),
   );
   await t.mutation(internal.mutations.putSubscription, {
+    testMode: true,
     raw: {
       entity: "subscription",
       id: "sub_ID6MOhgkcoHjE7",

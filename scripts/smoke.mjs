@@ -1,196 +1,16 @@
-import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHmac, randomBytes } from "node:crypto";
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
-import { join, resolve as resolvePath } from "node:path";
-import { tmpdir } from "node:os";
-import { createServer } from "node:net";
-import { stopChild } from "./e2e-process.mjs";
-import { acquireLock } from "./with-local-lock.mjs";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
+import { runSmoke, step } from "./smoke-harness.mjs";
 
-const root = resolvePath(import.meta.dirname, "..");
-const workspace = mkdtempSync(join(tmpdir(), "razorpay-smoke-"));
-const results = [];
-const failures = [];
-
-function localChildEnv() {
-  const env = { ...process.env, CONVEX_AGENT_MODE: "anonymous" };
-  for (const name of [
-    "CONVEX_DEPLOYMENT",
-    "CONVEX_DEPLOY_KEY",
-    "CONVEX_DEPLOYMENT_TOKEN",
-    "CONVEX_SELF_HOSTED_URL",
-    "CONVEX_SELF_HOSTED_ADMIN_KEY",
-    "CONVEX_URL",
-    "CONVEX_SITE_URL",
-  ])
-    delete env[name];
-  return env;
-}
-
-function convex(...args) {
-  return execFileSync("pnpm", ["exec", "convex", ...args], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    env: localChildEnv(),
-    cwd: workspace,
-  });
-}
-
-function run(fn, args = {}) {
-  return JSON.parse(convex("run", fn, JSON.stringify(args)).trim());
-}
-
-function runComponent(fn, args = {}) {
-  return JSON.parse(convex("run", fn, JSON.stringify(args), "--component", "razorpay").trim());
-}
-
-function check(name, ok, detail) {
-  results.push({ name, ok, detail });
-  if (!ok) failures.push(`${name}${detail ? `: ${detail}` : ""}`);
-}
+const ENVIRONMENT_TIMEOUT_MS = 30_000;
+const POLL_INTERVAL_MS = 250;
 
 const hmac = (secret, text) => createHmac("sha256", secret).update(text).digest("hex");
 
-let devServer;
-let devOutput = "";
-
-function stopDevServer() {
-  return stopChild(devServer);
-}
-process.on("exit", () => {
-  if (devServer?.pid && devServer.exitCode === null) {
-    try {
-      process.kill(-devServer.pid, "SIGTERM");
-    } catch {}
-  }
-});
-process.once("SIGINT", async () => {
-  await stopDevServer();
-  process.exit(130);
-});
-process.once("SIGTERM", async () => {
-  await stopDevServer();
-  process.exit(143);
-});
-
-async function freePort() {
-  const server = createServer();
-  await new Promise((resolvePort, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolvePort);
-  });
-  const port = server.address().port;
-  await new Promise((resolveClose) => server.close(resolveClose));
-  return port;
-}
-
-async function startDevServer() {
-  const cloud = await freePort();
-  const site = await freePort();
-  return new Promise((resolveReady, reject) => {
-    const child = spawn(
-      "pnpm",
-      [
-        "exec",
-        "convex",
-        "dev",
-        "--tail-logs",
-        "disable",
-        "--local-cloud-port",
-        String(cloud),
-        "--local-site-port",
-        String(site),
-      ],
-      {
-        stdio: ["ignore", "pipe", "pipe"],
-        env: localChildEnv(),
-        cwd: workspace,
-        detached: true,
-      },
-    );
-    devServer = child;
-    devOutput = "";
-    const timer = setTimeout(
-      () => reject(new Error(`convex dev not ready:\n${devOutput}`)),
-      180_000,
-    );
-    const onData = (chunk) => {
-      devOutput += chunk;
-      if (/Convex functions ready/.test(devOutput)) {
-        clearTimeout(timer);
-        resolveReady();
-      }
-    };
-    child.stdout.on("data", onData);
-    child.stderr.on("data", onData);
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    child.on("exit", (code) => {
-      clearTimeout(timer);
-      reject(new Error(`convex dev exited with ${code}:\n${devOutput}`));
-    });
-  });
-}
-
-function localEnv(name) {
-  if (!existsSync(join(workspace, ".env.local"))) return undefined;
-  const line = readFileSync(join(workspace, ".env.local"), "utf8")
-    .split("\n")
-    .find((l) => l.startsWith(`${name}=`));
-  return line?.slice(name.length + 1).trim();
-}
-
-async function reachable(url) {
-  try {
-    await fetch(url, { signal: AbortSignal.timeout(3000) });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function siteUrl() {
-  const fromEnv = localEnv("CONVEX_SITE_URL");
-  const fromCli = [...devOutput.matchAll(/https?:\/\/(?:127\.0\.0\.1|localhost):\d+/g)].map(
-    ([url]) => url,
-  );
-  const candidates = [...new Set([fromEnv, ...fromCli].filter(Boolean))];
-  for (const url of candidates) {
-    if (!/^http:\/\/(127\.0\.0\.1|localhost):\d+/.test(url))
-      throw new Error(`Refusing to run against a non-local site URL: ${url}`);
-    if (await reachable(url)) return url.replace(/\/$/, "");
-  }
-  throw new Error(`No reachable local site URL (tried ${candidates.join(", ") || "none"})`);
-}
-
-async function poll(name, assertion, timeoutMs = 30_000) {
-  const deadline = Date.now() + timeoutMs;
-  let lastError;
-  while (Date.now() < deadline) {
-    try {
-      const value = await assertion();
-      if (value) return value;
-    } catch (error) {
-      lastError = error;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  throw new Error(
-    `${name} did not become ready${lastError instanceof Error ? `: ${lastError.message}` : ""}`,
-  );
-}
-
-function setLocalEnv(name, value) {
-  const result = spawnSync("pnpm", ["exec", "convex", "env", "set", name], {
-    input: value,
-    stdio: ["pipe", "ignore", "pipe"],
-    encoding: "utf8",
-    env: localChildEnv(),
-    cwd: workspace,
-  });
-  if (result.status !== 0) throw new Error(`Could not set local ${name}`);
+function assertSmoke(condition, detail = "assertion failed") {
+  if (!condition) throw new Error(detail);
 }
 
 const envelope = (id, payment) =>
@@ -204,65 +24,71 @@ const envelope = (id, payment) =>
     id,
   });
 
-async function post(url, body, headers) {
+async function postWebhook(url, body, headers) {
   const response = await fetch(url, { method: "POST", body, headers });
   return response.status;
 }
 
-const release = await acquireLock();
-try {
-  console.log("1. Building the package and starting a disposable anonymous deployment...");
-  execFileSync("pnpm", ["build"], { stdio: "ignore", env: localChildEnv(), cwd: root });
-  for (const path of ["src", "dist", "example", "package.json", "convex.json"])
-    cpSync(join(root, path), join(workspace, path), { recursive: true });
-  symlinkSync(join(root, "node_modules"), join(workspace, "node_modules"), "dir");
-  await startDevServer();
+function readSiteUrl(workspace) {
+  const config = JSON.parse(
+    readFileSync(join(workspace, ".convex/local/default/config.json"), "utf8"),
+  );
+  return `http://127.0.0.1:${config.ports.site}`;
+}
 
+await runSmoke(async ({ workspace, runFunction, setEnvironmentVariable }) => {
   const webhookSecret = randomBytes(24).toString("hex");
   const keySecret = randomBytes(24).toString("hex");
-  for (const [name, value] of Object.entries({
-    RAZORPAY_TEST_MODE: "true",
-    RAZORPAY_KEY_ID: "rzp_test_smoke",
-    RAZORPAY_KEY_SECRET: keySecret,
-    RAZORPAY_WEBHOOK_SECRET: webhookSecret,
-  })) {
-    setLocalEnv(name, value);
-  }
-  const environmentReady = await poll("component environment", () => {
-    const status = run("smoke:environment");
-    return status.testMode === true && status.keyIdConfigured === true;
-  });
-  check("component environment loaded", environmentReady === true);
-
   const runId = randomBytes(6).toString("hex");
   const userId = `smoke-${runId}`;
+  const runComponent = (name, args) => runFunction(name, args, { component: "razorpay" });
+  const readState = (razorpayOrderId) => runFunction("smoke:state", { userId, razorpayOrderId });
+  const countFor = (eventId) => runFunction("smoke:notificationCount", { eventId });
+  const sign = (body) => ({
+    "content-type": "application/json",
+    "x-razorpay-signature": hmac(webhookSecret, body),
+  });
 
-  console.log("2. Creating test-mode entities and reading mirrored state...");
-  const setup = run("smoke:setup", { userId, runId });
-  check("customer getOrCreate", setup.razorpayCustomerId.startsWith("cust_"));
-  check("customer getOrCreate is stable", setup.sameCustomerOnRetry === true);
-  check(
-    "order created in test mode",
-    setup.razorpayOrderId.startsWith("order_") && setup.amount === 50000,
-  );
-  check("plan created", setup.razorpayPlanId.startsWith("plan_"));
-  check("subscription created", setup.razorpaySubscriptionId.startsWith("sub_"));
-  check("checkout options use configured key", setup.checkoutKeyIdPresent === true);
-  const before = run("smoke:state", { userId, razorpayOrderId: setup.razorpayOrderId });
-  check(
-    "customer mirror readable",
-    before.customer?.razorpayCustomerId === setup.razorpayCustomerId,
-  );
-  check(
-    "order mirror readable",
-    before.order?.status === "created" && before.order.amount === 50000,
-  );
-  check(
-    "subscription mirror readable",
-    before.subscription?.razorpaySubscriptionId === setup.razorpaySubscriptionId,
-  );
-  check("no payments before the webhook", before.payments.length === 0);
+  await step("component environment simulates test mode without a key ID", async () => {
+    await setEnvironmentVariable("RAZORPAY_TEST_MODE", "true");
+    await setEnvironmentVariable("RAZORPAY_KEY_SECRET", keySecret);
+    await setEnvironmentVariable("RAZORPAY_WEBHOOK_SECRET", webhookSecret);
+    const deadline = Date.now() + ENVIRONMENT_TIMEOUT_MS;
+    for (;;) {
+      const status = await runFunction("smoke:environment");
+      if (
+        status.testMode === true &&
+        status.keyIdConfigured === false &&
+        status.keySecretConfigured === true
+      )
+        return;
+      assertSmoke(Date.now() < deadline, `environment not loaded: ${JSON.stringify(status)}`);
+      await sleep(POLL_INTERVAL_MS);
+    }
+  });
 
+  const setup = await runFunction("smoke:setup", { userId, runId });
+  await step("customer getOrCreate creates a stable customer", () => {
+    assertSmoke(setup.razorpayCustomerId.startsWith("cust_"), setup.razorpayCustomerId);
+    assertSmoke(setup.sameCustomerOnRetry === true);
+  });
+  await step("order, plan and subscription are created in test mode", () => {
+    assertSmoke(setup.razorpayOrderId.startsWith("order_") && setup.amount === 50000);
+    assertSmoke(setup.razorpayPlanId.startsWith("plan_"));
+    assertSmoke(setup.razorpaySubscriptionId.startsWith("sub_"));
+  });
+  await step("simulated orders omit the Checkout key", () => {
+    assertSmoke(setup.checkoutKeyIdOmitted === true);
+  });
+  await step("customer, order and subscription mirrors are readable", async () => {
+    const before = await readState(setup.razorpayOrderId);
+    assertSmoke(before.customer?.razorpayCustomerId === setup.razorpayCustomerId);
+    assertSmoke(before.order?.status === "created" && before.order.amount === 50000);
+    assertSmoke(before.subscription?.razorpaySubscriptionId === setup.razorpaySubscriptionId);
+    assertSmoke(before.payments.length === 0, "payments exist before the webhook");
+  });
+
+  const hook = `${readSiteUrl(workspace)}/razorpay/webhook`;
   const razorpayPaymentId = `pay_${randomBytes(7).toString("hex")}`;
   const capturedBody = envelope(runId, {
     id: razorpayPaymentId,
@@ -274,222 +100,209 @@ try {
     order_id: setup.razorpayOrderId,
     method: "upi",
   });
-  const hook = `${await siteUrl()}/razorpay/webhook`;
   const eventId = `evt_${runId}_1`;
-  const sign = (body) => ({
-    "content-type": "application/json",
-    "x-razorpay-signature": hmac(webhookSecret, body),
+
+  await step("signed payment.captured returns 200 and runs onEvent once", async () => {
+    const status = await postWebhook(hook, capturedBody, {
+      ...sign(capturedBody),
+      "x-razorpay-event-id": eventId,
+    });
+    assertSmoke(status === 200, `status ${status}`);
+    const state = await readState(setup.razorpayOrderId);
+    assertSmoke(
+      state.payments.length === 1 &&
+        state.payments[0].razorpayPaymentId === razorpayPaymentId &&
+        state.payments[0].status === "captured",
+    );
+    assertSmoke((await countFor(eventId)) === 1);
   });
-  const countFor = (id) => run("smoke:notificationCount", { eventId: id });
 
-  check(
-    "webhook: signed payment.captured returns 200",
-    (await post(hook, capturedBody, { ...sign(capturedBody), "x-razorpay-event-id": eventId })) ===
-      200,
-  );
-  const afterHook = run("smoke:state", { userId, razorpayOrderId: setup.razorpayOrderId });
-  check(
-    "webhook: payment mirror is captured",
-    afterHook.payments.length === 1 &&
-      afterHook.payments[0].razorpayPaymentId === razorpayPaymentId &&
-      afterHook.payments[0].status === "captured",
-  );
-  check("webhook: onEvent callback ran once", countFor(eventId) === 1);
+  await step("a replayed body or event id returns 200 without another callback", async () => {
+    const replayId = `evt_${runId}_2`;
+    const replayStatus = await postWebhook(hook, capturedBody, {
+      ...sign(capturedBody),
+      "x-razorpay-event-id": replayId,
+    });
+    assertSmoke(replayStatus === 200, `status ${replayStatus}`);
+    assertSmoke((await countFor(replayId)) === 0);
+    const sameIdStatus = await postWebhook(hook, capturedBody, {
+      ...sign(capturedBody),
+      "x-razorpay-event-id": eventId,
+    });
+    assertSmoke(sameIdStatus === 200, `status ${sameIdStatus}`);
+    assertSmoke((await countFor(eventId)) === 1);
+  });
 
-  const replayId = `evt_${runId}_2`;
-  check(
-    "webhook: replay with a new event id returns 200",
-    (await post(hook, capturedBody, { ...sign(capturedBody), "x-razorpay-event-id": replayId })) ===
-      200,
-  );
-  check("webhook: replay did not run the callback", countFor(replayId) === 0);
-  check("webhook: original callback count unchanged", countFor(eventId) === 1);
-  check(
-    "webhook: replay with the same event id returns 200",
-    (await post(hook, capturedBody, { ...sign(capturedBody), "x-razorpay-event-id": eventId })) ===
-      200,
-  );
-  check("webhook: same-id replay did not rerun the callback", countFor(eventId) === 1);
-
-  const badId = `evt_${runId}_bad`;
-  check(
-    "webhook: bad signature returns 401",
-    (await post(hook, envelope(`bad-${runId}`, {}), {
+  await step("a bad signature returns 401 without a callback", async () => {
+    const badId = `evt_${runId}_bad`;
+    const status = await postWebhook(hook, envelope(`bad-${runId}`, {}), {
       "content-type": "application/json",
       "x-razorpay-signature": "0".repeat(64),
       "x-razorpay-event-id": badId,
-    })) === 401,
-  );
-  check("webhook: bad signature ran no callback", countFor(badId) === 0);
+    });
+    assertSmoke(status === 401, `status ${status}`);
+    assertSmoke((await countFor(badId)) === 0);
+  });
 
-  const oversizedId = `evt_${runId}_oversized`;
-  const oversized = "x".repeat(200_000);
-  check(
-    "webhook: oversized body returns 413",
-    (await post(hook, oversized, { ...sign(oversized), "x-razorpay-event-id": oversizedId })) ===
-      413,
-  );
-  check("webhook: oversized body ran no callback", countFor(oversizedId) === 0);
+  await step("an oversized body returns 413 without a callback", async () => {
+    const oversizedId = `evt_${runId}_oversized`;
+    const oversized = "x".repeat(200_000);
+    const status = await postWebhook(hook, oversized, {
+      ...sign(oversized),
+      "x-razorpay-event-id": oversizedId,
+    });
+    assertSmoke(status === 413, `status ${status}`);
+    assertSmoke((await countFor(oversizedId)) === 0);
+  });
 
-  const undecodableId = `evt_${runId}_undecodable`;
-  const undecodable = Uint8Array.of(0xff, 0xfe, 0xff);
-  check(
-    "webhook: undecodable body returns 400",
-    (await post(hook, undecodable, {
+  await step("an undecodable body returns 400 without a callback", async () => {
+    const undecodableId = `evt_${runId}_undecodable`;
+    const undecodable = Uint8Array.of(0xff, 0xfe, 0xff);
+    const status = await postWebhook(hook, undecodable, {
       "content-type": "application/json",
       "x-razorpay-signature": createHmac("sha256", webhookSecret).update(undecodable).digest("hex"),
       "x-razorpay-event-id": undecodableId,
-    })) === 400,
-  );
-  check("webhook: undecodable body ran no callback", countFor(undecodableId) === 0);
-
-  const malformedId = `evt_${runId}_malformed`;
-  const malformed = envelope(`malformed-${runId}`, {
-    id: `pay_${randomBytes(7).toString("hex")}`,
-    entity: "payment",
-    amount: -5,
-    currency: "INR",
-    status: "captured",
-  });
-  check(
-    "webhook: signed malformed entity returns 200 (recorded failed)",
-    (await post(hook, malformed, { ...sign(malformed), "x-razorpay-event-id": malformedId })) ===
-      200,
-  );
-  check("webhook: malformed entity ran no callback", countFor(malformedId) === 0);
-
-  const oddPaymentId = `pay_${randomBytes(7).toString("hex")}`;
-  const oddId = `evt_${runId}_odd`;
-  const odd = envelope(`odd-${runId}`, {
-    id: oddPaymentId,
-    entity: "payment",
-    amount: setup.amount,
-    currency: "INR",
-    status: "mystery",
-    order_id: setup.razorpayOrderId,
-  });
-  check(
-    "webhook: signed unexpected status returns 200",
-    (await post(hook, odd, { ...sign(odd), "x-razorpay-event-id": oddId })) === 200,
-  );
-  const afterOdd = run("smoke:state", { userId, razorpayOrderId: setup.razorpayOrderId });
-  check(
-    "webhook: unexpected status is stored as unknown, never captured",
-    afterOdd.payments.find((p) => p.razorpayPaymentId === oddPaymentId)?.status === "unknown",
-  );
-
-  const signature = hmac(keySecret, `${setup.razorpayOrderId}|${razorpayPaymentId}`);
-  const verify = (sig, user = userId) =>
-    run("smoke:verifyCheckout", {
-      razorpayOrderId: setup.razorpayOrderId,
-      razorpayPaymentId,
-      signature: sig,
-      userId: user,
     });
-  const tampered = verify(signature.replace(/.$/, signature.endsWith("0") ? "1" : "0"));
-  check("verifyCheckout: tampered signature fails", tampered.ok === false, tampered.error);
-  check("verifyCheckout: another user fails", verify(signature, "someone-else").ok === false);
-  const verified = verify(signature);
-  check(
-    "verifyCheckout: valid signature succeeds",
-    verified.ok === true && verified.verified,
-    verified.error,
-  );
-  const final = run("smoke:state", { userId, razorpayOrderId: setup.razorpayOrderId });
-  check(
-    "verifyCheckout: payment mirror marked verified",
-    final.payments.find((p) => p.razorpayPaymentId === razorpayPaymentId)?.verified === true,
-  );
+    assertSmoke(status === 400, `status ${status}`);
+    assertSmoke((await countFor(undecodableId)) === 0);
+  });
 
-  console.log("3. Refunding, changing a subscription, paging, and cleaning up...");
-  const refund = run("smoke:refund", { razorpayPaymentId, runId });
-  check(
-    "refund: test-mode refund created",
-    refund.razorpayRefundId.startsWith("rfnd_") && refund.amount === 20000,
-  );
-  check("refund: keyed retry reused the result", refund.stableOnRetry === true);
-  check("refund: over-refund rejected with structured error", refund.overRefundRejected === true);
+  await step("a signed malformed entity returns 200 without a callback", async () => {
+    const malformedId = `evt_${runId}_malformed`;
+    const malformed = envelope(`malformed-${runId}`, {
+      id: `pay_${randomBytes(7).toString("hex")}`,
+      entity: "payment",
+      amount: -5,
+      currency: "INR",
+      status: "captured",
+    });
+    const status = await postWebhook(hook, malformed, {
+      ...sign(malformed),
+      "x-razorpay-event-id": malformedId,
+    });
+    assertSmoke(status === 200, `status ${status}`);
+    assertSmoke((await countFor(malformedId)) === 0);
+  });
 
-  const subscriptionEventId = `evt_${runId}_subscription`;
-  const subscriptionBody = JSON.stringify({
-    entity: "event",
-    account_id: "acc_smoke",
-    event: "subscription.activated",
-    contains: ["subscription"],
-    payload: {
-      subscription: {
-        entity: {
-          id: setup.razorpaySubscriptionId,
-          entity: "subscription",
-          plan_id: setup.razorpayPlanId,
-          status: "active",
-          quantity: 1,
-          total_count: 12,
-          paid_count: 0,
-          remaining_count: 12,
-          created_at: Math.floor(Date.now() / 1000),
+  await step("a signed unexpected status is stored as unknown", async () => {
+    const oddPaymentId = `pay_${randomBytes(7).toString("hex")}`;
+    const odd = envelope(`odd-${runId}`, {
+      id: oddPaymentId,
+      entity: "payment",
+      amount: setup.amount,
+      currency: "INR",
+      status: "mystery",
+      order_id: setup.razorpayOrderId,
+    });
+    const status = await postWebhook(hook, odd, {
+      ...sign(odd),
+      "x-razorpay-event-id": `evt_${runId}_odd`,
+    });
+    assertSmoke(status === 200, `status ${status}`);
+    const state = await readState(setup.razorpayOrderId);
+    assertSmoke(
+      state.payments.find((payment) => payment.razorpayPaymentId === oddPaymentId)?.status ===
+        "unknown",
+    );
+  });
+
+  await step("verifyCheckout rejects a tampered signature and another user", async () => {
+    const signature = hmac(keySecret, `${setup.razorpayOrderId}|${razorpayPaymentId}`);
+    const verify = (candidate, candidateUserId) =>
+      runFunction("smoke:verifyCheckout", {
+        razorpayOrderId: setup.razorpayOrderId,
+        razorpayPaymentId,
+        signature: candidate,
+        userId: candidateUserId,
+      });
+    const tampered = await verify(
+      signature.replace(/.$/, signature.endsWith("0") ? "1" : "0"),
+      userId,
+    );
+    assertSmoke(tampered.ok === false, "tampered signature verified");
+    assertSmoke((await verify(signature, "someone-else")).ok === false, "another user verified");
+    const verified = await verify(signature, userId);
+    assertSmoke(verified.ok === true && verified.verified, verified.error);
+    const state = await readState(setup.razorpayOrderId);
+    assertSmoke(
+      state.payments.find((payment) => payment.razorpayPaymentId === razorpayPaymentId)
+        ?.verified === true,
+    );
+  });
+
+  await step("a keyed refund retries to one result and an over-refund fails", async () => {
+    const refund = await runFunction("smoke:refund", { razorpayPaymentId, runId });
+    assertSmoke(refund.razorpayRefundId.startsWith("rfnd_") && refund.amount === 20000);
+    assertSmoke(refund.stableOnRetry === true);
+    assertSmoke(refund.overRefundRejected === true);
+  });
+
+  await step("subscription activation, pause, resume and update apply", async () => {
+    const subscriptionBody = JSON.stringify({
+      entity: "event",
+      account_id: "acc_smoke",
+      event: "subscription.activated",
+      contains: ["subscription"],
+      payload: {
+        subscription: {
+          entity: {
+            id: setup.razorpaySubscriptionId,
+            entity: "subscription",
+            plan_id: setup.razorpayPlanId,
+            status: "active",
+            quantity: 1,
+            total_count: 12,
+            paid_count: 0,
+            remaining_count: 12,
+            created_at: Math.floor(Date.now() / 1000),
+          },
         },
       },
-    },
-    created_at: Math.floor(Date.now() / 1000),
-  });
-  check(
-    "subscription: signed activation webhook returns 200",
-    (await post(hook, subscriptionBody, {
+      created_at: Math.floor(Date.now() / 1000),
+    });
+    const status = await postWebhook(hook, subscriptionBody, {
       ...sign(subscriptionBody),
-      "x-razorpay-event-id": subscriptionEventId,
-    })) === 200,
-  );
-  const changes = run("smoke:changeSubscription", {
-    razorpaySubscriptionId: setup.razorpaySubscriptionId,
+      "x-razorpay-event-id": `evt_${runId}_subscription`,
+    });
+    assertSmoke(status === 200, `status ${status}`);
+    const changes = await runFunction("smoke:changeSubscription", {
+      razorpaySubscriptionId: setup.razorpaySubscriptionId,
+    });
+    assertSmoke(changes.paused === true && changes.resumed === true && changes.updated === true);
   });
-  check("subscription: pause applies", changes.paused === true);
-  check("subscription: resume applies", changes.resumed === true);
-  check("subscription: quantity update applies", changes.updated === true);
 
-  const pages = run("smoke:paginate", {
-    runId,
-    userId,
-    razorpayOrderId: setup.razorpayOrderId,
+  await step("plan, payment and subscription lists return distinct pages", async () => {
+    const pages = await runFunction("smoke:paginate", {
+      runId,
+      userId,
+      razorpayOrderId: setup.razorpayOrderId,
+    });
+    assertSmoke(pages.firstCount === 1 && pages.secondCount === 1 && pages.distinct === true);
+    assertSmoke(pages.paymentPages === true && pages.subscriptionPages === true);
   });
-  check(
-    "paginated plan list returns distinct pages",
-    pages.firstCount === 1 && pages.secondCount === 1 && pages.distinct === true,
-  );
-  check("stored payment list returns distinct cursor pages", pages.paymentPages === true);
-  check("stored subscription list returns distinct cursor pages", pages.subscriptionPages === true);
-  const cleanup = run("smoke:cleanup");
-  check("cleanup preserves recent events", cleanup.removedRecent === 0);
-  const releasedClaim = runComponent("plans:releaseIdempotency", {
-    idempotencyKey: `smoke-plan-${runId}`,
+
+  await step("cleanup clamps to the retention window and preserves recent events", async () => {
+    const removedCount = await runComponent("webhooks:cleanupScheduled", { before: Date.now() });
+    assertSmoke(removedCount === 0, `removed ${removedCount}`);
   });
-  check("completed idempotency claims cannot be released", releasedClaim === false);
-  const afterCleanup = run("smoke:setup", { userId, runId });
-  check(
-    "cleanup preserved keyed plan and subscription retries",
-    afterCleanup.razorpayPlanId === setup.razorpayPlanId &&
-      afterCleanup.razorpaySubscriptionId === setup.razorpaySubscriptionId,
-  );
-  check(
-    "cleanup preserved event deduplication",
-    (await post(hook, capturedBody, {
+
+  await step("completed idempotency claims cannot be released", async () => {
+    const isReleased = await runComponent("plans:releaseIdempotency", {
+      idempotencyKey: `smoke-plan-${runId}`,
+    });
+    assertSmoke(isReleased === false);
+  });
+
+  await step("cleanup preserves keyed retries and event deduplication", async () => {
+    const afterCleanup = await runFunction("smoke:setup", { userId, runId });
+    assertSmoke(
+      afterCleanup.razorpayPlanId === setup.razorpayPlanId &&
+        afterCleanup.razorpaySubscriptionId === setup.razorpaySubscriptionId,
+    );
+    const status = await postWebhook(hook, capturedBody, {
       ...sign(capturedBody),
       "x-razorpay-event-id": eventId,
-    })) === 200 && countFor(eventId) === 1,
-  );
-} catch (error) {
-  failures.push(`fatal: ${error instanceof Error ? error.message : String(error)}`);
-} finally {
-  await stopDevServer();
-  release();
-  rmSync(workspace, { recursive: true, force: true });
-}
-
-console.log("\nSmoke summary");
-for (const r of results)
-  console.log(`  ${r.ok ? "PASS" : "FAIL"}  ${r.name}${r.ok || !r.detail ? "" : ` (${r.detail})`}`);
-if (failures.length > 0) {
-  console.error(`\n${failures.length} failure(s):\n  ${failures.join("\n  ")}`);
-  process.exit(1);
-}
-console.log(`\nAll ${results.length} checks passed in the real Convex runtime.`);
+    });
+    assertSmoke(status === 200 && (await countFor(eventId)) === 1);
+  });
+});

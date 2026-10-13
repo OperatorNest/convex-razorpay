@@ -2,6 +2,7 @@ import { convexTest } from "convex-test";
 import { expect, test } from "vitest";
 import { internal } from "./_generated/api.js";
 import schema from "./schema.js";
+import { expectRazorpayError } from "../test-helpers.js";
 
 const modules = import.meta.glob(["./**/*.ts", "!./**/*.test.ts"]);
 const order = {
@@ -51,13 +52,13 @@ const subscription = {
 };
 
 function invalidResponse(promise: Promise<unknown>) {
-  return expect(promise).rejects.toMatchObject({ data: { code: "RAZORPAY_INVALID_RESPONSE" } });
+  return expectRazorpayError(promise, "RAZORPAY_INVALID_RESPONSE");
 }
 
 test("order mirror preserves monotonic totals and immutable identity", async () => {
   const t = convexTest(schema, modules);
   const put = (raw: unknown, observedAt: number) =>
-    t.mutation(internal.mutations.putOrder, { raw, observedAt });
+    t.mutation(internal.mutations.putOrder, { testMode: false, raw, observedAt });
   await put({ ...order, status: "paid", amount_paid: 1000, amount_due: 0, attempts: 2 }, 20);
   expect(
     await put({ ...order, status: "attempted", amount_paid: 0, amount_due: 1000, attempts: 1 }, 10),
@@ -73,7 +74,7 @@ test("order mirror preserves monotonic totals and immutable identity", async () 
 test("payment mirror rejects changed ownership and preserves capture and refunded totals", async () => {
   const t = convexTest(schema, modules);
   const put = (raw: unknown, observedAt: number) =>
-    t.mutation(internal.mutations.putPayment, { raw, observedAt });
+    t.mutation(internal.mutations.putPayment, { testMode: false, raw, observedAt });
   await put(
     {
       ...payment,
@@ -101,7 +102,7 @@ test("payment mirror rejects changed ownership and preserves capture and refunde
 test("processed refund resists stale status and immutable payment or amount changes", async () => {
   const t = convexTest(schema, modules);
   const put = (raw: unknown, observedAt: number) =>
-    t.mutation(internal.mutations.putRefund, { raw, observedAt });
+    t.mutation(internal.mutations.putRefund, { testMode: false, raw, observedAt });
   await put({ ...refund, status: "processed" }, 20);
   expect(await put({ ...refund, status: "pending" }, 30)).toMatchObject({ status: "processed" });
   await invalidResponse(put({ ...refund, payment_id: "pay_other" }, 30));
@@ -112,6 +113,7 @@ test("customer mirror refuses cross-user links and stale provider observations",
   const t = convexTest(schema, modules);
   const put = (raw: unknown, observedAt: number, userId?: string) =>
     t.mutation(internal.mutations.putCustomer, {
+      testMode: false,
       raw,
       observedAt,
       ...(userId === undefined ? {} : { userId }),
@@ -122,22 +124,25 @@ test("customer mirror refuses cross-user links and stale provider observations",
     name: "New",
     userId: "user_1",
   });
-  await expect(put({ ...customer, notes: {} }, 30, "user_2")).rejects.toMatchObject({
-    data: { code: "RAZORPAY_CUSTOMER_CONFLICT" },
-  });
+  await expectRazorpayError(
+    put({ ...customer, notes: {} }, 30, "user_2"),
+    "RAZORPAY_CUSTOMER_CONFLICT",
+  );
 });
 
 test("plan identity and idempotency claim fingerprint are enforced", async () => {
   const t = convexTest(schema, modules);
-  await t.mutation(internal.mutations.putPlan, { raw: plan, observedAt: 10 });
+  await t.mutation(internal.mutations.putPlan, { testMode: false, raw: plan, observedAt: 10 });
   await invalidResponse(
     t.mutation(internal.mutations.putPlan, {
+      testMode: false,
       raw: { ...plan, item: { ...plan.item, amount: 2000 } },
       observedAt: 20,
     }),
   );
   await invalidResponse(
     t.mutation(internal.mutations.putPlan, {
+      testMode: false,
       raw: plan,
       observedAt: 20,
       idempotencyKey: "missing",
@@ -154,14 +159,16 @@ test("plan identity and idempotency claim fingerprint are enforced", async () =>
       createdAt: 10,
     });
   });
-  await expect(
+  await expectRazorpayError(
     t.mutation(internal.mutations.putPlan, {
+      testMode: false,
       raw: plan,
       observedAt: 20,
       idempotencyKey: "present",
       requestFingerprint: "other",
     }),
-  ).rejects.toMatchObject({ data: { code: "RAZORPAY_IDEMPOTENCY_CONFLICT" } });
+    "RAZORPAY_IDEMPOTENCY_CONFLICT",
+  );
 });
 
 test("subscription mirror cannot regress paid count and settles its claim", async () => {
@@ -177,6 +184,7 @@ test("subscription mirror cannot regress paid count and settles its claim", asyn
     });
   });
   await t.mutation(internal.mutations.putSubscription, {
+    testMode: false,
     raw: { ...subscription, status: "active", paid_count: 3, remaining_count: 9 },
     observedAt: 20,
     idempotencyKey: "subscription-key",
