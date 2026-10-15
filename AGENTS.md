@@ -32,7 +32,7 @@ Initialize a fresh checkout with `CONVEX_AGENT_MODE=anonymous pnpm exec convex i
 
 ## Toolchain and verification
 
-Use tracked `.mise.toml` with `mise trust && mise install`: Node 24, pnpm 12.9.1, TS6 tooling alias and TS7 native compiler. Preserve strict TypeScript flags, all Convex lint rules at error, Oxfmt, Knip and workspace supply-chain settings. Do not patch dependencies. Disable exactOptionalPropertyTypes because convex-helpers ships TypeScript source that fails it; recheck on every convex-helpers upgrade.
+Preserve strict TypeScript flags, all Convex lint rules at error, Oxfmt, Knip and workspace supply-chain settings. Do not patch dependencies. Disable exactOptionalPropertyTypes because convex-helpers ships TypeScript source that fails it; recheck on every convex-helpers upgrade.
 
 Test every public client method. Keep tests beside modules and shared helpers in `src/test-helpers.ts`. Stub fabricated env and provider fetch; restore both after every test. Use `vi.setSystemTime` and restore timers in `afterEach`. Simulator proof does not establish component env binding or deployed Convex behavior.
 
